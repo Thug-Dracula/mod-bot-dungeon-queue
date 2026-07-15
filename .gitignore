@@ -1,0 +1,13 @@
+*.o
+*.o.d
+*.a
+*.so
+*.swp
+*~
+.DS_Store
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+.env

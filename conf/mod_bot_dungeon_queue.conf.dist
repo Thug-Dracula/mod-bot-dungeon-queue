@@ -1,0 +1,73 @@
+[worldserver]
+
+###############################################################################
+# mod-bot-dungeon-queue configuration
+###############################################################################
+#
+# Controls how random bots form dungeon groups, queue for instance content,
+# and exit after completing (or wiping in) a dungeon.
+
+###############################################################################
+# MASTER SWITCH
+###############################################################################
+
+BotDungeonQueue.Enable = 1
+
+###############################################################################
+# QUEUE TIMING
+###############################################################################
+
+# How often (in seconds) the module checks for eligible bots to form new
+# dungeon groups. Lower = more responsive but higher CPU.
+BotDungeonQueue.QueueInterval = 30
+
+# Minimum level a bot must be to join a dungeon group. Default 15 (RFC).
+BotDungeonQueue.MinLevel = 15
+
+# Maximum percentage of online bots that can be inside dungeons at any time.
+# 0 = unlimited (no cap).
+BotDungeonQueue.MaxBotsPct = 50
+
+###############################################################################
+# BG COMPATIBILITY
+###############################################################################
+
+# When enabled, bots already in the BG queue will not be considered for
+# dungeon groups. When disabled, BGs and dungeons compete for the same bots.
+BotDungeonQueue.RespectBgQueue = 1
+
+###############################################################################
+# COMMUNICATION
+###############################################################################
+
+# Controls how bots respond to player chat inside dungeons.
+# 0 = always /say
+# 1 = whisper when a specific player is the target (fallback to /say otherwise)
+BotDungeonQueue.WhisperReplies = 1
+
+###############################################################################
+# TELEPORT-OUT ON DEATH
+###############################################################################
+
+# When a bot dies inside a dungeon and the group cannot recover, the run is
+# abandoned and all surviving members are teleported home.
+# 0 = disabled (bots stay dead in the dungeon until server restart)
+# 1 = enabled (recommended)
+BotDungeonQueue.TeleportOutOnDeath = 1
+
+###############################################################################
+# STUCK BOT CLEANUP
+###############################################################################
+
+# How often (in seconds) to sweep for bots stuck alone in dungeons and
+# teleport them home. 5 minutes gives groups time to form and navigate
+# toward the boss before the first sweep.
+BotDungeonQueue.StuckCleanupInterval = 300
+
+# How long (in seconds) after entering a dungeon a bot is exempt from the
+# stuck cleanup. Prevents the cleanup from teleporting a group leader home
+# before the other 4 members finish their teleport. Should cover the time
+# from queue-check teleport through the deferred-follower teleports plus
+# initial group movement into the instance. 5 minutes matches the cleanup
+# interval so bots survive at least one full cycle.
+BotDungeonQueue.StuckCleanupGracePeriod = 300
