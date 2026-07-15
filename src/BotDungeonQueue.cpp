@@ -263,6 +263,18 @@ public:
             data << uint8(0);
             bot->GetSession()->HandleRepopRequestOpcode(data);
         }
+
+        // Deferred follower teleports (m_pendingFollows from RunQueueCheck).
+        // One tick after the tank, its map entry completed, so followers'
+        // step 1 perm bind resolves to the shared instance.
+        if (!m_pendingFollows.empty())
+        {
+            auto follows = std::move(m_pendingFollows);
+            for (auto& pt : follows)
+                for (Player* m : pt.members)
+                    if (m && m->IsInWorld())
+                        m->TeleportTo(pt.mapId, pt.x, pt.y, pt.z, pt.o);
+        }
     }
 
 private:
@@ -271,6 +283,14 @@ private:
     uint32 m_skullSyncTimer = 0;
     uint32 m_heartbeatTimer = 0;
     bool m_startupCleanupDone = false;
+
+    struct PendingTeleport
+    {
+        std::vector<Player*> members;
+        uint32 mapId;
+        float x, y, z, o;
+    };
+    std::vector<PendingTeleport> m_pendingFollows;
 
     void RunQueueCheck()
     {
@@ -438,17 +458,28 @@ private:
                                  tank->GetName());
                         Fail();
                         continue;
-                    }
-                    for (Player* m : {healer, groupDps[0], groupDps[1], groupDps[2]})
+                    // Teleport the tank first (creates the instance map).
+                    // Followers are deferred to the next tick so the tank's
+                    // map entry (and perm→temp downgrade in AddPlayerToMap)
+                    // completes before they resolve their own perm bind.
+                    if (!tank->TeleportTo(selected->mapId, selected->x, selected->y, selected->z, selected->o))
                     {
-                        if (!m->TeleportTo(selected->mapId, selected->x, selected->y, selected->z, selected->o))
-                            LOG_INFO("playerbots", "mod-bot-dungeon-queue: teleport failed for {}", m->GetName());
+                        LOG_INFO("playerbots", "mod-bot-dungeon-queue: teleport failed for tank {}, disbanding",
+                                 tank->GetName());
+                        Fail();
+                        continue;
                     }
 
                     g_dungeonEntryTimeMs[tank->GetGUID()] = getMSTime();
                     g_dungeonEntryTimeMs[healer->GetGUID()] = getMSTime();
                     for (Player* d2 : groupDps)
                         g_dungeonEntryTimeMs[d2->GetGUID()] = getMSTime();
+
+                    // Defer followers to the next world tick
+                    m_pendingFollows.push_back({
+                        {healer, groupDps[0], groupDps[1], groupDps[2]},
+                        selected->mapId, selected->x, selected->y, selected->z, selected->o
+                    });
 
                     LOG_INFO("playerbots", "mod-bot-dungeon-queue: teleported group '{}' to map {} (levels {}-{})",
                              tank->GetName(), selected->mapId, minLvl, maxLvl);
@@ -459,6 +490,7 @@ private:
                 }
             }
         }
+    }
     }
 
     void RunStuckCleanup()
