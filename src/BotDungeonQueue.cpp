@@ -176,6 +176,23 @@ public:
             return;
         }
 
+        // Delayed cleanup: catch bots that weren't in-world during the first pass
+        if (!m_delayedCleanupDone)
+        {
+            m_delayedCleanupDone = true;
+            for (PlayerBotMap::const_iterator it = sRandomPlayerbotMgr.GetPlayerBotsBegin();
+                 it != sRandomPlayerbotMgr.GetPlayerBotsEnd(); ++it)
+            {
+                Player* bot = it->second;
+                if (bot && bot->IsInWorld() && bot->GetMap() && bot->GetMap()->IsDungeon())
+                {
+                    LOG_INFO("playerbots", "mod-bot-dungeon-queue: delayed cleanup teleporting {} home from stale map {}",
+                             bot->GetName(), bot->GetMapId());
+                    bot->TeleportTo(bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ, bot->GetOrientation());
+                }
+            }
+        }
+
         m_queueTimer += diff;
         m_cleanupTimer += diff;
         m_skullSyncTimer += diff;
@@ -185,9 +202,25 @@ public:
         {
             m_heartbeatTimer = 0;
             LOG_INFO("playerbots", "mod-bot-dungeon-queue: heartbeat OK");
+            // Log real-time positions of bots in dungeons (for diagnostics)
+            for (PlayerBotMap::const_iterator it = sRandomPlayerbotMgr.GetPlayerBotsBegin();
+                 it != sRandomPlayerbotMgr.GetPlayerBotsEnd(); ++it)
+            {
+                Player* bot = it->second;
+                if (!bot || !bot->IsInWorld())
+                    continue;
+                Map* m = bot->GetMap();
+                if (!m || !m->IsDungeon())
+                    continue;
+                InstanceMap* im = m->ToInstanceMap();
+                uint32 instId = im ? im->GetInstanceId() : 0;
+                LOG_INFO("playerbots", "  pos {}: map={} inst={} ({:.1f}, {:.1f}, {:.1f})",
+                         bot->GetName(), m->GetId(), instId,
+                         bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+            }
         }
 
-        if (m_skullSyncTimer >= 2000)
+        if (m_skullSyncTimer >= 100)
         {
             m_skullSyncTimer = 0;
             for (PlayerBotMap::const_iterator it = sRandomPlayerbotMgr.GetPlayerBotsBegin();
@@ -221,6 +254,7 @@ public:
 
         if (m_cleanupTimer >= BotDungeonQueueConfig::StuckCleanupInterval() * 1000)
         {
+            LOG_INFO("playerbots", "mod-bot-dungeon-queue: cleanup FIRING (timer={})", m_cleanupTimer);
             m_cleanupTimer = 0;
             RunStuckCleanup();
         }
@@ -267,11 +301,12 @@ public:
         }
 
         // Dungeon-complete sweep: teleport group home when all bosses are dead
+        // Also logs bot positions for diagnostics.
         for (PlayerBotMap::const_iterator it = sRandomPlayerbotMgr.GetPlayerBotsBegin();
              it != sRandomPlayerbotMgr.GetPlayerBotsEnd(); ++it)
         {
             Player* bot = it->second;
-            if (!bot || !bot->IsInWorld() || !bot->IsAlive())
+            if (!bot || !bot->IsInWorld())
                 continue;
             Map* m = bot->GetMap();
             if (!m || !m->IsDungeon())
@@ -292,23 +327,22 @@ public:
             if (!mask)
                 continue; // no boss has been killed yet
 
-            // Count total encounters for this map from the DBC
-            uint32 totalEncounters = 0;
+            // Build the "all bits set" mask from actual DBC encounter indices.
+            // Indices are NOT contiguous starting at 0 — they match DungeonEncounter.dbc.
+            uint32 allBits = 0;
             for (uint32 i = 0; i < sDungeonEncounterStore.GetNumRows(); ++i)
                 if (DungeonEncounterEntry const* enc = sDungeonEncounterStore.LookupEntry(i))
                     if (enc->mapId == m->GetId())
-                        ++totalEncounters;
+                        allBits |= (1u << enc->encounterIndex);
 
-            if (!totalEncounters)
+            if (!allBits)
                 continue;
 
-            // All encounter bits set? (mask covers all encounters)
-            uint32 const allBits = (1u << totalEncounters) - 1;
             if ((mask & allBits) != allBits)
                 continue; // some bosses still alive
 
-            LOG_INFO("playerbots", "mod-bot-dungeon-queue: dungeon {} complete for {} (mask {:08x} of {}), teleporting group home",
-                     m->GetId(), bot->GetName(), mask, totalEncounters);
+            LOG_INFO("playerbots", "mod-bot-dungeon-queue: dungeon {} complete for {} (mask {:08x} all {:08x}), teleporting group home",
+                     m->GetId(), bot->GetName(), mask, allBits);
             if (Group* g = bot->GetGroup())
                 TeleportGroupHome(g);
             else
@@ -355,6 +389,7 @@ private:
     uint32 m_skullSyncTimer = 0;
     uint32 m_heartbeatTimer = 0;
     bool m_startupCleanupDone = false;
+    bool m_delayedCleanupDone = false;
 
     struct PendingTeleport
     {
