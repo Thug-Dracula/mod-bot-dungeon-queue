@@ -33,23 +33,24 @@ namespace
 }
 
 std::vector<DungeonPort> const BotDungeonPorts = {
-    {15, 26,  36,  -16.4f,    -383.07f,    61.78f,   1.86f},    // Deadmines
-    {16, 30,  33, -229.135f,  2109.18f,    76.8898f, 1.267f},   // Shadowfang Keep
-    {15, 25, 389,    3.81f,     -14.82f,   -17.84f,   4.39f},    // Ragefire Chasm
-    {19, 40,  48, -151.89f,    106.96f,   -39.87f,   4.53f},    // Blackfathom Deeps
-    {20, 45,  34,   54.23f,      0.28f,   -18.34f,   6.26f},    // Stormwind Stockade
-    {20, 45,  43, -146.49f,   -265.56f,    17.22f,   1.18f},    // Wailing Caverns
-    {20, 50,  47, 1043.64f,   -474.57f,   -44.04f,   5.07f},    // Razorfen Kraul
-    {24, 55, 129, 3094.89f,    3769.49f,    42.88f,   1.77f},   // Razorfen Downs
-    {28, 55,  70,    5.25f,     -2.64f,     1.93f,   0.02f},    // Uldaman
-    {29, 60,  90, -7599.52f,   806.29f,   1569.7f,   6.10f},    // Zul'Farak
-    {30, 55, 349, -173.53f,     30.69f,    -6.48f,   0.04f},    // Maraudon
-    {31, 55, 109, 4610.12f,     -896.64f,   30.45f,  5.98f},    // Sunken Temple
-    {35, 60, 289, -471.51f,    -266.27f,   169.59f,  5.71f},    // Blackrock Depths
-    {40, 60, 230,  149.63f,     -41.87f,    36.74f,  0.24f},    // Blackrock Spire
-    {45, 60, 201, -5430.22f,   -2946.53f,   92.08f,  5.37f},    // Stratholme
-    {45, 60, 329, 2758.35f,     -404.31f,   115.14f, 2.53f},    // Hellfire Ramparts
-    {48, 60, 269, -11831.0f,    -4819.0f,    0.55f,  0.14f},    // Caverns of Time
+    {15, 26,  36,  -16.4f,    -383.07f,    61.78f,   1.86f},    // Deadmines — FULL NAVMESH
+    {16, 30,  33, -229.135f,  2109.18f,    76.8898f, 1.267f},   // Shadowfang Keep — FULL NAVMESH
+    {19, 40,  48, -151.89f,    106.96f,   -39.87f,   4.53f},    // Blackfathom Deeps — FULL NAVMESH
+    {20, 45,  34,   54.23f,      0.28f,   -18.34f,   6.26f},    // Stormwind Stockade — FULL NAVMESH
+    {24, 55, 129, 3094.89f,    3769.49f,    42.88f,   1.77f},   // Razorfen Downs — FULL NAVMESH
+    {28, 55,  70,    5.25f,     -2.64f,     1.93f,   0.02f},    // Uldaman — FULL NAVMESH
+    {29, 60,  90, -7599.52f,   806.29f,   1569.7f,   6.10f},    // Zul'Farak — FULL NAVMESH
+    {30, 55, 349, -173.53f,     30.69f,    -6.48f,   0.04f},    // Maraudon — FULL NAVMESH
+    {31, 55, 109, 4610.12f,     -896.64f,   30.45f,  5.98f},    // Sunken Temple — FULL NAVMESH
+    {35, 60, 289, -471.51f,    -266.27f,   169.59f,  5.71f},    // Blackrock Depths — FULL NAVMESH
+    {40, 60, 230,  149.63f,     -41.87f,    36.74f,  0.24f},    // Blackrock Spire — FULL NAVMESH
+    {45, 60, 201, -5430.22f,   -2946.53f,   92.08f,  5.37f},    // Stratholme — FULL NAVMESH
+    {45, 60, 329, 2758.35f,     -404.31f,   115.14f, 2.53f},    // Hellfire Ramparts — FULL NAVMESH
+    {48, 60, 269, -11831.0f,    -4819.0f,    0.55f,  0.14f},    // Caverns of Time — FULL NAVMESH
+    // No navmesh for these — DungeonSpawnGraph fallback unreliable from entrance:
+    // {15, 25, 389,    3.81f,     -14.82f,   -17.84f,   4.39f},  // Ragefire Chasm
+    // {20, 45,  43, -146.49f,   -265.56f,    17.22f,   1.18f},  // Wailing Caverns
+    // {20, 50,  47, 1043.64f,   -474.57f,   -44.04f,   5.07f},  // Razorfen Kraul
 };
 
 namespace BotDungeonQueueConfig
@@ -133,8 +134,9 @@ static void EnableDcOn(Player* p, bool isTank = false)
         ai->ChangeStrategy("+dungeon clear", BOT_STATE_NON_COMBAT);
     if (!ai->HasStrategy("dungeon clear combat", BOT_STATE_COMBAT))
         ai->ChangeStrategy("+dungeon clear combat", BOT_STATE_COMBAT);
-    if (isTank && !ai->HasStrategy("tank", BOT_STATE_NON_COMBAT))
-        ai->ChangeStrategy("+tank", BOT_STATE_NON_COMBAT);
+    // Tank strategy is class-specific and only registered for the combat engine
+    if (isTank && !ai->HasStrategy("tank", BOT_STATE_COMBAT))
+        ai->ChangeStrategy("+tank", BOT_STATE_COMBAT);
     DcRunState& rs = DcRun::Of(ai->GetAiObjectContext());
     rs = DcRunState{};
     rs.enabled = true;
@@ -264,6 +266,55 @@ public:
             bot->GetSession()->HandleRepopRequestOpcode(data);
         }
 
+        // Dungeon-complete sweep: teleport group home when all bosses are dead
+        for (PlayerBotMap::const_iterator it = sRandomPlayerbotMgr.GetPlayerBotsBegin();
+             it != sRandomPlayerbotMgr.GetPlayerBotsEnd(); ++it)
+        {
+            Player* bot = it->second;
+            if (!bot || !bot->IsInWorld() || !bot->IsAlive())
+                continue;
+            Map* m = bot->GetMap();
+            if (!m || !m->IsDungeon())
+                continue;
+
+            // Check the encounter mask via the InstanceScript
+            InstanceMap* im = m->ToInstanceMap();
+            if (!im)
+                continue;
+            InstanceScript* script = im->GetInstanceScript();
+            if (!script)
+                continue;
+            InstanceSave* save = sInstanceSaveMgr->GetInstanceSave(im->GetInstanceId());
+            if (!save)
+                continue;
+
+            uint32 const mask = save->GetCompletedEncounterMask();
+            if (!mask)
+                continue; // no boss has been killed yet
+
+            // Count total encounters for this map from the DBC
+            uint32 totalEncounters = 0;
+            for (uint32 i = 0; i < sDungeonEncounterStore.GetNumRows(); ++i)
+                if (DungeonEncounterEntry const* enc = sDungeonEncounterStore.LookupEntry(i))
+                    if (enc->mapId == m->GetId())
+                        ++totalEncounters;
+
+            if (!totalEncounters)
+                continue;
+
+            // All encounter bits set? (mask covers all encounters)
+            uint32 const allBits = (1u << totalEncounters) - 1;
+            if ((mask & allBits) != allBits)
+                continue; // some bosses still alive
+
+            LOG_INFO("playerbots", "mod-bot-dungeon-queue: dungeon {} complete for {} (mask {:08x} of {}), teleporting group home",
+                     m->GetId(), bot->GetName(), mask, totalEncounters);
+            if (Group* g = bot->GetGroup())
+                TeleportGroupHome(g);
+            else
+                bot->TeleportTo(bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ, 0.0f);
+        }
+
         // Deferred follower teleports (m_pendingFollows from RunQueueCheck).
         // One tick after the tank, its map entry completed, so followers'
         // step 1 perm bind resolves to the shared instance.
@@ -271,9 +322,30 @@ public:
         {
             auto follows = std::move(m_pendingFollows);
             for (auto& pt : follows)
+            {
+                LOG_INFO("playerbots", "mod-bot-dungeon-queue: deferred teleport for {} followers to map {}",
+                         pt.members.size(), pt.mapId);
                 for (Player* m : pt.members)
-                    if (m && m->IsInWorld())
-                        m->TeleportTo(pt.mapId, pt.x, pt.y, pt.z, pt.o);
+                {
+                    if (!m)
+                    {
+                        LOG_INFO("playerbots", "  null player, skipping");
+                        continue;
+                    }
+                    if (!m->IsInWorld())
+                    {
+                        LOG_INFO("playerbots", "  {} NOT in world, skipping", m->GetName());
+                        continue;
+                    }
+                    Difficulty diff = m->GetDifficulty(sMapStore.LookupEntry(pt.mapId)->IsRaid());
+                    auto* selfBind = sInstanceSaveMgr->PlayerGetBoundInstance(m->GetGUID(), pt.mapId, diff);
+                    LOG_INFO("playerbots", "  {} teleporting map {} diff {} selfBind={} perm={}",
+                             m->GetName(), pt.mapId, diff,
+                             selfBind ? std::to_string(selfBind->save->GetInstanceId()).c_str() : "NULL",
+                             selfBind ? selfBind->perm : false);
+                    m->TeleportTo(pt.mapId, pt.x, pt.y, pt.z, pt.o);
+                }
+            }
         }
     }
 
@@ -444,20 +516,6 @@ private:
                         sLFGMgr->LeaveLfg(m->GetGUID());
                     }
 
-                    // Teleport tank first, then followers. TeleportTo marks the
-                    // bot as IsBeingTeleported, which suppresses playerbots AI
-                    // (PlayerbotAI.cpp:249). After the tank's worldport completes,
-                    // its perm→temp downgrade in AddPlayerToMap happens, but
-                    // followers still have perm=true so their step 1 resolves our
-                    // shared instance. The SAME-TICK stagger ensures the tank's
-                    // map is created before followers enter, while still being
-                    // atomic enough that no AI tick runs between teleports.
-                    if (!tank->TeleportTo(selected->mapId, selected->x, selected->y, selected->z, selected->o))
-                    {
-                        LOG_INFO("playerbots", "mod-bot-dungeon-queue: teleport failed for tank {}, disbanding",
-                                 tank->GetName());
-                        Fail();
-                        continue;
                     // Teleport the tank first (creates the instance map).
                     // Followers are deferred to the next tick so the tank's
                     // map entry (and perm→temp downgrade in AddPlayerToMap)
@@ -490,7 +548,6 @@ private:
                 }
             }
         }
-    }
     }
 
     void RunStuckCleanup()
@@ -596,6 +653,19 @@ public:
         }
     }
 
+    void OnPlayerKilledByCreature(Creature* /*killer*/, Player* player) override
+    {
+        if (!BotDungeonQueueConfig::Enable())
+            return;
+        if (!sRandomPlayerbotMgr.IsRandomBot(player))
+            return;
+        Map* map = player->GetMap();
+        if (!map || !map->IsDungeon())
+            return;
+        sRandomPlayerbotMgr.SetValue(player->GetGUID().GetCounter(), "death_time",
+                                     static_cast<uint32>(GameTime::GetGameTime().count()));
+    }
+
     void OnPlayerReleasedGhost(Player* player) override
     {
         if (!BotDungeonQueueConfig::Enable())
@@ -613,6 +683,16 @@ public:
                  player->GetName(), map->GetId());
         TeleportGroupHome(group);
     }
+
+    void OnPlayerResurrect(Player* player, float /*restore_percent*/, bool& /*applySickness*/) override
+    {
+        if (!BotDungeonQueueConfig::Enable())
+            return;
+        if (!sRandomPlayerbotMgr.IsRandomBot(player))
+            return;
+        sRandomPlayerbotMgr.SetValue(player->GetGUID().GetCounter(), "death_time", 0);
+    }
+
 private:
     void EnableDungeonClear(Player* player)
     {
