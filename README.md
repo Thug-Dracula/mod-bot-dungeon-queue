@@ -69,7 +69,7 @@ Blackfathom Deeps has an underwater entrance at `(-151.89, 106.96, -39.87)`. Bot
 Several dungeons require NPC/gameobject interaction sequences (e.g., Uldaman stone pillars, Maraudon's portal, BRD bar/pub). These need to be registered as `DungeonEvent` entries in mod-dungeon-clear's event system. Currently only SFK courtyard (door) and Deadmines (goblin cannon door) are wired.
 
 ### Navmesh gaps in specific dungeons
-Ragefire Chasm (389), Wailing Caverns (43), and Razorfen Kraul (47) are removed from BotDungeonPorts due to missing/partial navmesh tiles. These dungeons are missing from the ChromieCraft client's `.map` extraction and can't be used without a complete WoW 3.3.5a client for `mmaps_generator`. If you have a full client, regenerate the navmeshes and add them back.
+Ragefire Chasm (389), Wailing Caverns (43), and Razorfen Kraul (47) are removed from BotDungeonPorts due to missing/partial navmesh tiles. If you have a full client, regenerate the navmeshes and add them back.
 
 ### Death-disable re-enable
 `mod-dungeon-clear` disables `DcRunState.enabled` on any party death (to prevent death-loops). The DC watchdog in the heartbeat re-enables it within ~60s, but there's a window where the group sits idle. This is a safety feature of mod-dungeon-clear, not something we can fully bypass.
