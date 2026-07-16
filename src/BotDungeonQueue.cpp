@@ -683,8 +683,7 @@ private:
                     PlayerbotAI* ai = GET_PLAYERBOT_AI(m);
                     if (ai)
                     {
-                        DcRunState& rs = DcRun::Of(ai->GetAiObjectContext());
-                        if (rs.enabled)
+                        if (DcLeaderSignal::IsDungeonClearLeader(m))
                             hasLead = true;
                     }
                 }
