@@ -463,6 +463,7 @@ private:
 
         uint32 totalOnline = 0;
         uint32 inDungeon = 0;
+        LOG_INFO("playerbots", "mod-bot-dungeon-queue: queue tick");
         for (auto it = mgr.GetPlayerBotsBegin(); it != mgr.GetPlayerBotsEnd(); ++it)
         {
             Player* bot = it->second;
