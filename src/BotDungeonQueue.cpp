@@ -14,6 +14,8 @@
 #include "DBCStores.h"
 #include "GameTime.h"
 
+#include <map>
+
 #include "Playerbots.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -30,6 +32,7 @@ namespace
 {
     std::unordered_map<ObjectGuid, uint32> g_dungeonEntryTimeMs;
     std::unordered_map<ObjectGuid, bool> g_snapInProgress;
+    std::map<uint32, uint32> g_wipeCount;
 }
 
 std::vector<DungeonPort> const BotDungeonPorts = {
@@ -37,7 +40,7 @@ std::vector<DungeonPort> const BotDungeonPorts = {
     {16, 30,  33, -229.135f,  2109.18f,    76.8898f, 1.267f},   // Shadowfang Keep — FULL NAVMESH
     {19, 40,  48, -151.89f,    106.96f,   -39.87f,   4.53f},    // Blackfathom Deeps — FULL NAVMESH
     {20, 45,  34,   54.23f,      0.28f,   -18.34f,   6.26f},    // Stormwind Stockade — FULL NAVMESH
-    {24, 55, 129, 3094.89f,    3769.49f,    42.88f,   1.77f},   // Razorfen Downs — FULL NAVMESH
+    {24, 55, 129, 2529.98f,    1044.96f,    46.59f,   1.77f},   // Razorfen Downs — FULL NAVMESH
     {28, 55,  70,    5.25f,     -2.64f,     1.93f,   0.02f},    // Uldaman — FULL NAVMESH
     {29, 60,  90, -7599.52f,   806.29f,   1569.7f,   6.10f},    // Zul'Farak — FULL NAVMESH
     {30, 55, 349, -173.53f,     30.69f,    -6.48f,   0.04f},    // Maraudon — FULL NAVMESH
@@ -62,6 +65,7 @@ namespace BotDungeonQueueConfig
     bool RespectBgQueue() { return sConfigMgr->GetOption<bool>("BotDungeonQueue.RespectBgQueue", true); }
     bool WhisperReplies() { return sConfigMgr->GetOption<bool>("BotDungeonQueue.WhisperReplies", true); }
     bool TeleportOutOnDeath() { return sConfigMgr->GetOption<bool>("BotDungeonQueue.TeleportOutOnDeath", true); }
+    uint32 MaxWipesBeforeEvict() { return sConfigMgr->GetOption<uint32>("BotDungeonQueue.MaxWipesBeforeEvict", 4); }
     uint32 StuckCleanupInterval() { return sConfigMgr->GetOption<uint32>("BotDungeonQueue.StuckCleanupInterval", 300); }
     uint32 StuckCleanupGracePeriod() { return sConfigMgr->GetOption<uint32>("BotDungeonQueue.StuckCleanupGracePeriod", 300); }
 }
@@ -747,8 +751,25 @@ public:
         Group* group = player->GetGroup();
         if (!BotDungeonQueueConfig::TeleportOutOnDeath() || !group)
             return;
-        LOG_INFO("playerbots", "mod-bot-dungeon-queue: {} released ghost in dungeon {} — teleporting group home",
-                 player->GetName(), map->GetId());
+
+        InstanceMap* im = map->ToInstanceMap();
+        uint32 const instId = im ? im->GetInstanceId() : 0;
+        if (instId)
+        {
+            uint32& wipes = g_wipeCount[instId];
+            ++wipes;
+            uint32 const maxWipes = BotDungeonQueueConfig::MaxWipesBeforeEvict();
+            LOG_INFO("playerbots", "mod-bot-dungeon-queue: {} released ghost in {} (wipe {}/{})",
+                     player->GetName(), map->GetId(), wipes, maxWipes);
+            if (wipes < maxWipes)
+            {
+                // Let the group try again — don't evict yet
+                return;
+            }
+            LOG_INFO("playerbots", "mod-bot-dungeon-queue: max wipes ({}) reached for inst {} — evicting group",
+                     maxWipes, instId);
+            g_wipeCount.erase(instId);
+        }
         TeleportGroupHome(group);
     }
 
@@ -774,14 +795,14 @@ private:
             ai->ChangeStrategy("+dungeon clear combat", BOT_STATE_COMBAT);
 
         DcRunState& rs = DcRun::Of(ai->GetAiObjectContext());
-        // Only the tank leads the run; followers resolve PartyTank from
-        // the leader's enabled flag. Setting enabled on everyone caused
-        // every bot to try driving the advance simultaneously.
-        bool const isTank = PlayerbotAI::IsTank(player);
-        if (!rs.enabled && isTank)
+        // Trust the state from EnableDcOn (which uses the queue's GetBotRole
+        // for tank detection). PlayerbotAI::IsTank can disagree (e.g., a
+        // Feral Druid not in bear form), so don't re-validate here. Only
+        // fresh-init if no state exists at all.
+        if (!rs.enabled && !rs.paused)
         {
             rs = DcRunState{};
-            rs.enabled = true;
+            rs.enabled = PlayerbotAI::IsTank(player);
         }
 
         sLFGMgr->LeaveLfg(player->GetGUID());

@@ -1,60 +1,113 @@
 # mod-bot-dungeon-queue
 
-> **⚠️ IN DEVELOPMENT**  
-> Multiple groups have been observed pushing deep into Deadmines (~300yd from entrance, past the first boss Rhahk'zor). Instance sharing, DC leadership, death recovery, and forced-advance timeout are working. Click mechanics (SFK courtyard, Deadmines goblin door) still need DungeonEvent registrations.
+## What is this? (plain English)
 
-Autonomous dungeon queuing and clearing for bot groups. Forms 5-player parties (tank + healer + 3 DPS) by level bracket, teleports them into a shared dungeon instance, and enables [mod-dungeon-clear](https://github.com/Thug-Dracula/mod-dungeon-clear) on every member so the group navigates, engages bosses, and clears the dungeon without player input.
+This module makes bot parties form up, enter dungeons, and clear them without human involvement. Every 30 seconds it checks for available bots, groups them by level bracket, teleports them into a shared dungeon instance, and enables autonomous navigation and combat through [mod-dungeon-clear](https://github.com/Thug-Dracula/mod-dungeon-clear).
 
-Depends on [mod-playerbots](https://github.com/azerothcore/mod-playerbots) and [mod-dungeon-clear](https://github.com/Thug-Dracula/mod-dungeon-clear).
+Bosses are killed, trash is pulled, deaths are recovered, and completed groups exit and re-queue. The system handles full wipes (instant release, retry up to 4 times) and individual deaths (wait for resurrection, or release after 6 minutes).
 
-## How it works
+**This is beta software.** Multiple dungeons have been fully cleared (Shadowfang Keep, Deadmines, Stormwind Stockade). Several features are incomplete (underwater navigation, click mechanics, instance sharing is ~88% reliable). See [Known issues](#known-issues) below.
 
-1. **Queue** — every `QueueInterval` (default 30s), eligible bots are grouped by faction + level bracket (5-level segments). Groups of 5 (1 tank / 1 healer / 3 DPS) are formed.
-2. **Pre-bind** — a shared `InstanceSave` is pre-allocated and all 5 members are permanently bound to it, so `PlayerGetDestinationInstanceId` resolves to the same instance for every member.
-3. **Teleport** — all members are teleported via `Player::TeleportTo` to the entrance coordinates of a matching dungeon. The stagger (tank first, then followers) ensures the tank's map transfer initiates first.
-4. **Dungeon Clear** — `mod-dungeon-clear` is enabled on the tank (only). Followers resolve the leader via `PartyTank` and follow/fight through DC's assist system. Skull sync every 2s.
-5. **Death handling** — on individual death, waits 6 minutes for a resurrection. On full wipe (all party members dead), releases immediately. A DC watchdog re-enables dungeon clear on the tank after death-disable within ~60s.
-6. **Stuck cleanup** — every `StuckCleanupInterval`, solo bots still inside instances are teleported home. A `StuckCleanupGracePeriod` exempts freshly-teleported groups.
+---
 
-## Supported dungeons
+### What is this? (for developers)
 
-| Map | Dungeon | Navmesh | Entrance coords |
-|---|---|---|---|
-| 36 | Deadmines | Full | `(-16.4, -383.07, 61.78)` |
-| 33 | Shadowfang Keep | Full | `(-229.14, 2109.18, 76.89)` |
-| 389 | Ragefire Chasm | Removed* | `(3.81, -14.82, -17.84)` |
-| 48 | Blackfathom Deeps | Full | `(-151.89, 106.96, -39.87)` |
-| 34 | Stormwind Stockade | Full | `(54.23, 0.28, -18.34)` |
-| 43 | Wailing Caverns | Removed* | `(-146.49, -265.56, 17.22)` |
-| 47 | Razorfen Kraul | Removed* | `(1043.64, -474.57, -44.04)` |
-| 129 | Razorfen Downs | Full | `(3094.89, 3769.49, 42.88)` |
-| 70 | Uldaman | Full | `(5.25, -2.64, 1.93)` |
-| 90 | Zul'Farak | Full | `(-7599.52, 806.29, 1569.7)` |
-| 349 | Maraudon | Full | `(-173.53, 30.69, -6.48)` |
-| 109 | Sunken Temple | Full | `(4610.12, -896.64, 30.45)` |
-| 289 | Blackrock Depths | Full | `(-471.51, -266.27, 169.59)` |
-| 230 | Blackrock Spire | Full | `(149.63, -41.87, 36.74)` |
-| 201 | Stratholme | Full | `(-5430.22, -2946.53, 92.08)` |
-| 329 | Hellfire Ramparts | Full | `(2758.35, -404.31, 115.14)` |
-| 269 | Caverns of Time | Full | `(-11831.0, -4819.0, 0.55)` |
+`mod-bot-dungeon-queue` is an AzerothCore C++ module that orchestrates autonomous bot dungeon clearing. It depends on [mod-playerbots](https://github.com/azerothcore/mod-playerbots) (the bot AI framework) and [mod-dungeon-clear](https://github.com/Thug-Dracula/mod-dungeon-clear) (the dungeon navigation/pathfinding layer).
 
-\* DungeonSpawnGraph fallback — partial navmesh tiles were removed; bots path through creature spawn points instead.
+The high-level flow:
+
+1. **Queue loop** (every 30s) — scans all online bots, groups them by faction and level bracket (5-level windows), forms a party of 5 (1 tank + 1 healer + 3 DPS via `GetBotRole`).
+2. **Instance binding** — a fresh `InstanceSave` is pre-allocated and all 5 members are permanently bound to it. This ensures AzerothCore's `PlayerGetDestinationInstanceId()` resolves to the same instance for every member.
+3. **Staggered teleport** — tank teleports first via `Player::TeleportTo()` to the dungeon entrance. Followers are queued (`m_pendingFollows`) and teleported on the next `OnUpdate` tick. This gives the tank's map transfer time to settle before followers arrive.
+4. **DC enablement** — `mod-dungeon-clear` is enabled on the tank only (`DcRunState.enabled = true`). Followers keep `enabled = false` and resolve the leader via `PartyTank` cross-bot lookup, then use DC's built-in follow/assist system.
+5. **Death handling** — individual deaths wait 6 minutes for resurrection; full party wipes trigger immediate spirit release. A DC watchdog (runs every heartbeat) re-enables dungeon clear on the tank after `mod-dungeon-clear` disables it on death.
+6. **Wipe counter** — tracks wipes per instance via a `std::unordered_map<instanceId, int>` (`g_wipeCount`). After `MaxWipesBeforeEvict` (default 4), the group is teleported home.
+7. **Completion exit** — checks `InstanceSave::GetCompletedEncounterMask()` against DBC `DungeonEncounterEntry` indices. When all bits match, the group is teleported home.
+8. **Stuck cleanup** — periodic sweep (every `StuckCleanupInterval`) teleports solo bots still lodged in dungeon maps back to their home city.
+9. **LFG interference prevention** — bots set a `pending_dungeon` flag that `LfgActions::JoinLFG()` checks before re-queuing them through the stock LFG system.
+
+---
+
+## What works
+
+Dungeon clearing is proven end-to-end across multiple sessions and group compositions:
+
+| Dungeon | Status |
+|---|---|
+| Shadowfang Keep (33) | **Full clear confirmed** — 8/8 bosses. Multiple groups have done it. |
+| Deadmines (36) | **Full clear confirmed** — 7/7 bosses (VanCleef killed). |
+| Stormwind Stockade (34) | **Full clear confirmed** — 5/5 bosses. |
+| Blackfathom Deeps (48) | **Active progress** — bots navigate deeper each session. Underwater entry partially handled. |
+| Razorfen Downs (129) | Wired — entrance coords set but full-clear untested. |
+| Uldaman (70) | Wired — entrance coords set but full-clear untested. |
+| All others | Wired with entrance coords; clear status unknown. |
+
+**Working features:**
+
+- Group formation by level bracket (tank/healer/DPS detection)
+- Shared instance binding (perm bind + deferred tick, ~88% success — occasional race conditions in async `HandleMoveWorldportAck`)
+- Dungeon navigation and boss fights (via mod-dungeon-clear)
+- Party-combat override — DPS attack when ANY party member is in combat (not just the tank)
+- Forced-advance timeout (20s) — prevents indefinite idle after pull aborts
+- Tank-only DC leadership — only the tank gets `DcRunState.enabled = true`; followers resolve leader via `PartyTank`
+- Death recovery (individual 6-min timer + full-party instant release)
+- Wipe counter (configurable max wipes before eviction)
+- Dungeon completion detection and auto-exit
+- Stuck cleanup (solo survivors in dungeon instances)
+- LFG interference prevention (`pending_dungeon` flag + `LeaveLfg` call)
+- DC watchdog — re-enables DC on live tanks after death-disable
+- Follow distance raised to 15 yards
+- Click mechanics wired: SFK courtyard (Alliance/Horde), Deadmines Iron Clad Door (Defias Cannon)
+
+---
+
+## Known issues
+
+### Instance sharing reliability (~88%)
+Some followers still resolve a separate instance despite pre-binding. The deferred-tick approach (`m_pendingFollows`: tank teleports immediately, followers in next `OnUpdate`) gives the tank's transfer a head start, but occasional races in `HandleMoveWorldportAck` cause split instances. This is an AzerothCore async teleport timing issue — not easily fixable without engine changes.
+
+### BFD underwater navigation
+Blackfathom Deeps has an underwater entrance at `(-151.89, 106.96, -39.87)`. Bots can drown or fail to path through swim zones. The `NavmeshSnap` system can't snap to valid walkable polys if the bot is swimming. A dedicated swim-state handler or adjusted entrance coords may be needed.
+
+### Click mechanics
+Several dungeons require NPC/gameobject interaction sequences (e.g., Uldaman stone pillars, Maraudon's portal, BRD bar/pub). These need to be registered as `DungeonEvent` entries in mod-dungeon-clear's event system. Currently only SFK courtyard (door) and Deadmines (goblin cannon door) are wired.
+
+### Navmesh gaps in specific dungeons
+Ragefire Chasm (389), Wailing Caverns (43), and Razorfen Kraul (47) are removed from BotDungeonPorts due to missing/partial navmesh tiles. These dungeons are missing from the ChromieCraft client's `.map` extraction and can't be used without a complete WoW 3.3.5a client for `mmaps_generator`. If you have a full client, regenerate the navmeshes and add them back.
+
+### Death-disable re-enable
+`mod-dungeon-clear` disables `DcRunState.enabled` on any party death (to prevent death-loops). The DC watchdog in the heartbeat re-enables it within ~60s, but there's a window where the group sits idle. This is a safety feature of mod-dungeon-clear, not something we can fully bypass.
+
+---
+
+## Future features (planned)
+
+- **Water/swim handling** — entrance coords for BFD and other aquatic zones, or a bot swim-state override.
+- **Complete click mechanic coverage** — register all missing DungeonEvent entries (Uldaman, Maraudon, BRD, etc.).
+- **Improve instance sharing** — investigate sync enhancements or a retry mechanism for failed followers.
+- **Instance selection by gear/bot power** — don't just match by level; consider gear score.
+- **Persistence** — save/restore groups across server restarts.
+- **Dashboard** — web or in-game status showing active groups, progress, last wipe.
+- **Evasion handling** — detect bots stuck in evasion (mob ran to spawn, bot can't reach it) and force-advance.
+
+---
 
 ## Configuration
 
-Copy `conf/mod_bot_dungeon_queue.conf.dist` to `mod_bot_dungeon_queue.conf` and adjust:
+Copy `conf/mod_bot_dungeon_queue.conf.dist` to `mod_bot_dungeon_queue.conf` and edit:
 
 | Option | Default | Description |
 |---|---|---|
-| `BotDungeonQueue.Enable` | `true` | Master switch |
+| `BotDungeonQueue.Enable` | `1` | Master switch (0 = off, 1 = on) |
 | `BotDungeonQueue.QueueInterval` | `30` | Seconds between queue checks |
-| `BotDungeonQueue.MinLevel` | `15` | Minimum level to queue |
+| `BotDungeonQueue.MinLevel` | `15` | Minimum level to be eligible |
 | `BotDungeonQueue.MaxBotsPct` | `50` | Max % of online bots in dungeons at once |
-| `BotDungeonQueue.RespectBgQueue` | `true` | Don't queue bots in BG queues |
-| `BotDungeonQueue.StuckCleanupInterval` | `300` | Seconds between stuck cleanups |
-| `BotDungeonQueue.StuckCleanupGracePeriod` | `300` | Seconds of grace before cleanup evicts |
+| `BotDungeonQueue.RespectBgQueue` | `1` | Skip bots queued for battlegrounds |
+| `BotDungeonQueue.StuckCleanupInterval` | `300` | Seconds between stuck sweeps |
+| `BotDungeonQueue.StuckCleanupGracePeriod` | `300` | Seconds before a freshly-teleported group is evicted |
+| `BotDungeonQueue.MaxWipesBeforeEvict` | `4` | Max party wipes before teleporting home |
 
-## Required worldserver.conf settings
+### Required worldserver.conf settings
 
 ```ini
 playerbots.randomBotJoinLfg = 1
@@ -66,18 +119,25 @@ RestHealthPct = 1
 RestManaPct = 1
 ```
 
-## Known issues
+---
 
-- **Instance sharing reliability** — some followers still resolve a separate instance (~88% success). The pre-allocation + perm bind + deferred tick approach works for most members but occasional races in `HandleMoveWorldportAck` still occur.
-- **LFG interference** — the stock playerbots LFG system can re-queue bots inside a dungeon group. `LeaveLfg` + `pending_dungeon` guard mitigate this.
-- **DC leadership** — `DcRunState.enabled` is now only set on the tank; followers use `PartyTank` cross-bot resolution. This matches the DC module's design.
-- **Click mechanics** — some dungeons have scripted events requiring NPC/gameobject interaction (e.g., Deadmines goblin door, Uldaman stones). SFK courtyard is wired.
-- **Death-disable** — `mod-dungeon-clear` disables the run on any party death. The DC watchdog re-enables it within ~60s.
-- **Party-combat** — DPS now attacks when ANY groupmate is in combat, not just the tank. Prevents idle-DPS after tank death.
+## How navmesh affects this mod
 
-## Rebuild & deploy
+Bot pathfinding in dungeons depends on navigation mesh (navmesh) data — files that tell the AI where it can walk, swim, or jump. These files are generated from a WoW 3.3.5a client using the standard `mapextractor → vmap4assembler → mmaps_generator` pipeline.
 
-The binary at `build.host/src/server/apps/worldserver` is bind-mounted into the worldserver container.
+**If you're using this module for the first time:**
+
+1. You need a **full, genuine WoW 3.3.5a (Patch 3.3.5, build 12340)** installation on the machine running the server.
+2. Run `mapextractor`, `vmap4assembler`, and `mmaps_generator` from your core build. The resulting `.mmap`/`.mmtile` files go into `env/dist/data/mmaps/`.
+3. Dungeons with missing or incomplete navmeshes will cause bots to stand still. If a particular dungeon doesn't work, check whether its navmesh tiles exist.
+
+We extracted our navmeshes from a ChromieCraft client, which was missing several maps (RFC, WC, RFK). If you use a complete official client, all maps should generate correctly.
+
+---
+
+## Build & deploy
+
+The compiled binary at `build.host/src/server/apps/worldserver` is bind-mounted into the worldserver container for fast deploys.
 
 ```bash
 cd /opt/azerothcore/azerothcore-wotlk
@@ -91,3 +151,16 @@ sudo docker cp acore-fast:/azerothcore/build.host/src/server/apps/worldserver bu
 # Restart worldserver
 sudo docker compose -f docker-compose.yml -f docker-compose.override.yml restart ac-worldserver
 ```
+
+---
+
+## Dependencies
+
+- [mod-playerbots](https://github.com/azerothcore/mod-playerbots) — bot AI framework. Required.
+- [mod-dungeon-clear](https://github.com/Thug-Dracula/mod-dungeon-clear) — dungeon navigation, pull, combat, and boss logic. Required.
+
+---
+
+## Repository
+
+https://github.com/Thug-Dracula/mod-bot-dungeon-queue
