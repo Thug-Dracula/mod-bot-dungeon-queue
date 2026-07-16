@@ -692,11 +692,12 @@ private:
                     if (!m || !m->IsInWorld() || m->GetMapId() != bot->GetMapId())
                         continue;
                     ++inThisDungeon;
-                    PlayerbotAI* ai = GET_PLAYERBOT_AI(m);
-                    if (ai)
-                    {
-                        if (DcLeaderSignal::IsDungeonClearLeader(m))
-                            hasLead = true;
+                    // Check via spec tab (GetBotRole) — more reliable than
+                    // IsDungeonClearLeader which can transiently return false
+                    // due to leader cache timing. A tank by spec means the
+                    // group has proper leadership even if DC hasn't resolved it.
+                    if ((GetBotRole(m) & PLAYER_ROLE_TANK))
+                        hasLead = true;
                     }
                 }
                 if (inThisDungeon > 1 && hasLead)
@@ -706,6 +707,10 @@ private:
             LOG_INFO("playerbots", "mod-bot-dungeon-queue: stuck cleanup teleporting {} ({}) home from map {}",
                      bot->GetName(), group ? "solo survivor" : "ungrouped", bot->GetMapId());
             bot->TeleportTo(bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ, 0.0f);
+            // Disband the group so evicted bots become eligible for re-queuing
+            // (IsBotEligible rejects grouped bots).
+            if (group)
+                group->Disband();
             ++cleaned;
         }
 
