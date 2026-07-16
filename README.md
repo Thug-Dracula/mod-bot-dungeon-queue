@@ -1,7 +1,7 @@
 # mod-bot-dungeon-queue
 
-> **⚠️ UNFINISHED — NOT PRODUCTION-READY**  
-> This module is actively developed, very buggy, and should not be used in a production environment. Instance sharing is unreliable, DC leadership is inconsistent, and many dungeon interactions are unwired.
+> **⚠️ IN DEVELOPMENT**  
+> Multiple groups have been observed pushing deep into Deadmines (~300yd from entrance, past the first boss Rhahk'zor). Instance sharing, DC leadership, death recovery, and forced-advance timeout are working. Click mechanics (SFK courtyard, Deadmines goblin door) still need DungeonEvent registrations.
 
 Autonomous dungeon queuing and clearing for bot groups. Forms 5-player parties (tank + healer + 3 DPS) by level bracket, teleports them into a shared dungeon instance, and enables [mod-dungeon-clear](https://github.com/Thug-Dracula/mod-dungeon-clear) on every member so the group navigates, engages bosses, and clears the dungeon without player input.
 
@@ -12,8 +12,8 @@ Depends on [mod-playerbots](https://github.com/azerothcore/mod-playerbots) and [
 1. **Queue** — every `QueueInterval` (default 30s), eligible bots are grouped by faction + level bracket (5-level segments). Groups of 5 (1 tank / 1 healer / 3 DPS) are formed.
 2. **Pre-bind** — a shared `InstanceSave` is pre-allocated and all 5 members are permanently bound to it, so `PlayerGetDestinationInstanceId` resolves to the same instance for every member.
 3. **Teleport** — all members are teleported via `Player::TeleportTo` to the entrance coordinates of a matching dungeon. The stagger (tank first, then followers) ensures the tank's map transfer initiates first.
-4. **Dungeon Clear** — `mod-dungeon-clear` is enabled on all members. The tank navigates the dungeon, DPS assist on the tank's target (skull sync every 2s), and the group progresses through bosses.
-5. **Death handling** — on individual death, waits 6 minutes for a resurrection. On full wipe (all party members dead), releases immediately so the group can regroup and retry.
+4. **Dungeon Clear** — `mod-dungeon-clear` is enabled on the tank (only). Followers resolve the leader via `PartyTank` and follow/fight through DC's assist system. Skull sync every 2s.
+5. **Death handling** — on individual death, waits 6 minutes for a resurrection. On full wipe (all party members dead), releases immediately. A DC watchdog re-enables dungeon clear on the tank after death-disable within ~60s.
 6. **Stuck cleanup** — every `StuckCleanupInterval`, solo bots still inside instances are teleported home. A `StuckCleanupGracePeriod` exempts freshly-teleported groups.
 
 ## Supported dungeons
@@ -61,34 +61,33 @@ playerbots.randomBotJoinLfg = 1
 AccountInstancesPerHour = 100
 PartyMaxSpread = 200
 PullDynamicPartyLag = 3
-PullDynamicMaxLeeroyMobs = 999
+PullDynamicMaxLeeroyMobs = 1
 RestHealthPct = 1
 RestManaPct = 1
 ```
 
 ## Known issues
 
-- **Instance sharing reliability** — some followers still resolve a separate instance. The pre-allocation + perm bind approach works for most members but occasionally a follower's `PlayerGetDestinationInstanceId` returns 0. Believed to be a race in `HandleMoveWorldportAck` where the cached perm bind isn't found during the async map transfer.
-- **LFG interference** — the stock playerbots LFG system can re-queue bots inside a dungeon group. `LeaveLfg` is called on all members at queue time to mitigate this.
-- **DC leadership** — `IsDungeonClearLeader` checks `PlayerbotAI::IsTank`, which may disagree with the queue's `GetBotRole` for some specs (e.g., Druids without feral talents). The tank strategy is explicitly added in `EnableDcOn` to align them.
-- **Click mechanics** — some dungeons have scripted events requiring NPC/gameobject interaction (e.g., Uldaman stones, SFK courtyard door). These need `DungeonEvent` registrations; SFK and Deadmines are already wired.
+- **Instance sharing reliability** — some followers still resolve a separate instance (~88% success). The pre-allocation + perm bind + deferred tick approach works for most members but occasional races in `HandleMoveWorldportAck` still occur.
+- **LFG interference** — the stock playerbots LFG system can re-queue bots inside a dungeon group. `LeaveLfg` + `pending_dungeon` guard mitigate this.
+- **DC leadership** — `DcRunState.enabled` is now only set on the tank; followers use `PartyTank` cross-bot resolution. This matches the DC module's design.
+- **Click mechanics** — some dungeons have scripted events requiring NPC/gameobject interaction (e.g., Deadmines goblin door, Uldaman stones). SFK courtyard is wired.
+- **Death-disable** — `mod-dungeon-clear` disables the run on any party death. The DC watchdog re-enables it within ~60s.
+- **Party-combat** — DPS now attacks when ANY groupmate is in combat, not just the tank. Prevents idle-DPS after tank death.
 
 ## Rebuild & deploy
 
-From the build container (`acore-fast`):
+The binary at `build.host/src/server/apps/worldserver` is bind-mounted into the worldserver container.
 
 ```bash
-# Compile single changed file
-cd /azerothcore/build.host
-make modules/CMakeFiles/modules.dir/mod-bot-dungeon-queue/src/BotDungeonQueue.cpp.o
+cd /opt/azerothcore/azerothcore-wotlk
 
-# Update archive
-ar crs modules/libmodules.a modules/CMakeFiles/modules.dir/mod-bot-dungeon-queue/src/BotDungeonQueue.cpp.o
+# Full rebuild (all modules)
+sudo docker exec acore-fast bash -c 'cd /azerothcore/build.host && make -j$(nproc) worldserver'
 
-# Relink worldserver
-make -j$(nproc) worldserver
+# Copy to host (bind-mount serves it to the container)
+sudo docker cp acore-fast:/azerothcore/build.host/src/server/apps/worldserver build.host/src/server/apps/worldserver
 
-# Copy binary
-docker cp src/server/apps/worldserver ac-worldserver:/azerothcore/env/dist/bin/worldserver
-docker restart ac-worldserver
+# Restart worldserver
+sudo docker compose -f docker-compose.yml -f docker-compose.override.yml restart ac-worldserver
 ```
