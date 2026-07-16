@@ -41,7 +41,7 @@ std::vector<DungeonPort> const BotDungeonPorts = {
     {16, 30,  33, -229.135f,  2109.18f,    76.8898f, 1.267f},   // Shadowfang Keep — FULL NAVMESH
     {19, 40,  48, -151.89f,    106.96f,   -39.87f,   4.53f},    // Blackfathom Deeps — FULL NAVMESH
     {20, 45,  34,   54.23f,      0.28f,   -18.34f,   6.26f},    // Stormwind Stockade — FULL NAVMESH
-    {24, 55, 129, 2529.98f,    1044.96f,    46.59f,   1.77f},   // Razorfen Downs — FULL NAVMESH
+    {37, 55, 129, 2529.98f,    1044.96f,    46.59f,   1.77f},   // Razorfen Downs — FULL NAVMESH (enemies ~35-40)
     {28, 55,  70,    5.25f,     -2.64f,     1.93f,   0.02f},    // Uldaman — FULL NAVMESH
     {29, 60,  90, -7599.52f,   806.29f,   1569.7f,   6.10f},    // Zul'Farak — FULL NAVMESH
     {30, 55, 349, -173.53f,     30.69f,    -6.48f,   0.04f},    // Maraudon — FULL NAVMESH
