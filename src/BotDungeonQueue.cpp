@@ -655,13 +655,22 @@ private:
             if (group)
             {
                 uint32 inThisDungeon = 0;
+                bool hasLead = false;
                 for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
                 {
                     Player* m = ref->GetSource();
-                    if (m && m->IsInWorld() && m->GetMapId() == bot->GetMapId())
-                        ++inThisDungeon;
+                    if (!m || !m->IsInWorld() || m->GetMapId() != bot->GetMapId())
+                        continue;
+                    ++inThisDungeon;
+                    PlayerbotAI* ai = GET_PLAYERBOT_AI(m);
+                    if (ai)
+                    {
+                        DcRunState& rs = DcRun::Of(ai->GetAiObjectContext());
+                        if (rs.enabled)
+                            hasLead = true;
+                    }
                 }
-                if (inThisDungeon > 1)
+                if (inThisDungeon > 1 && hasLead)
                     continue;
             }
 
