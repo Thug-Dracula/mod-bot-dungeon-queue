@@ -51,8 +51,8 @@ std::vector<DungeonPort> const BotDungeonPorts = {
     {45, 60, 201, -5430.22f,   -2946.53f,   92.08f,  5.37f},    // Stratholme — FULL NAVMESH
     {45, 60, 329, 2758.35f,     -404.31f,   115.14f, 2.53f},    // Hellfire Ramparts — FULL NAVMESH
     {48, 60, 269, -11831.0f,    -4819.0f,    0.55f,  0.14f},    // Caverns of Time — FULL NAVMESH
-    // No navmesh for these — DungeonSpawnGraph fallback unreliable from entrance:
-    // {15, 25, 389,    3.81f,     -14.82f,   -17.84f,   4.39f},  // Ragefire Chasm
+    // No navmesh for these — DungeonSpawnGraph fallback:
+    {15, 25, 389,    3.81f,     -14.82f,   -17.84f,   4.39f},    // Ragefire Chasm — partial navmesh
     // {20, 45,  43, -146.49f,   -265.56f,    17.22f,   1.18f},  // Wailing Caverns
     // {20, 50,  47, 1043.64f,   -474.57f,   -44.04f,   5.07f},  // Razorfen Kraul
 };
