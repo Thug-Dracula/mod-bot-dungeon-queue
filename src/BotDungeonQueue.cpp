@@ -276,11 +276,10 @@ public:
                     isLeader = DcLeaderSignal::IsDungeonClearLeader(bot);
                     hasBear = ai->HasStrategy("tank", BOT_STATE_COMBAT) || ai->HasStrategy("bear", BOT_STATE_COMBAT);
                 }
-                LOG_INFO("playerbots", "  dc {}: map={} inst={} ({:.1f}, {:.1f}, {:.1f}) tank={} en={} pause={} lead={} bear={}",
-                         bot->GetName(), m->GetId(), instId,
-                         bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
-                         isTank, dcEnabled, dcPaused, isLeader, hasBear);
-            }
+            LOG_INFO("playerbots", "  dc {}: map={} inst={} ({:.1f}, {:.1f}, {:.1f}) tank={} en={} pause={} lead={} bear={}",
+                     bot->GetName(), m->GetId(), instId,
+                     bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
+                     isTank, dcEnabled, dcPaused, isLeader, hasBear);
         }
 
         // DC watchdog: re-enable dungeon clear on the tank if it was
@@ -343,8 +342,9 @@ public:
                 ai->ChangeStrategy("+tank", BOT_STATE_COMBAT);
             }
         }
+    }
 
-        if (m_skullSyncTimer >= 100)
+    if (m_skullSyncTimer >= 100)
         {
             m_skullSyncTimer = 0;
             for (PlayerBotMap::const_iterator it = sRandomPlayerbotMgr.GetPlayerBotsBegin();
