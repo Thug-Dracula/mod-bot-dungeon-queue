@@ -1,7 +1,5 @@
 # mod-bot-dungeon-queue
 
-## What is this? (plain English)
-
 This module makes bot parties form up, enter dungeons, and clear them without human involvement. Every 30 seconds it checks for available bots, groups them by level bracket, teleports them into a shared dungeon instance, and enables autonomous navigation and combat through [mod-dungeon-clear](https://github.com/Thug-Dracula/mod-dungeon-clear).
 
 Bosses are killed, trash is pulled, deaths are recovered, and completed groups exit and re-queue. The system handles full wipes (instant release, retry up to 4 times) and individual deaths (wait for resurrection, or release after 6 minutes).
@@ -9,8 +7,6 @@ Bosses are killed, trash is pulled, deaths are recovered, and completed groups e
 **This is beta software.** Multiple dungeons have been fully cleared (Shadowfang Keep, Deadmines, Stormwind Stockade). Several features are incomplete (underwater navigation, click mechanics, instance sharing is ~88% reliable). See [Known issues](#known-issues) below.
 
 ---
-
-### What is this? (for developers)
 
 `mod-bot-dungeon-queue` is an AzerothCore C++ module that orchestrates autonomous bot dungeon clearing. It depends on [mod-playerbots](https://github.com/azerothcore/mod-playerbots) (the bot AI framework) and [mod-dungeon-clear](https://github.com/Thug-Dracula/mod-dungeon-clear) (the dungeon navigation/pathfinding layer).
 
