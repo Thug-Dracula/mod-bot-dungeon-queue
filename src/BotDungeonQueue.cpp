@@ -34,13 +34,14 @@ namespace
     std::unordered_map<ObjectGuid, uint32> g_dungeonEntryTimeMs;
     std::unordered_map<ObjectGuid, bool> g_snapInProgress;
     std::map<uint32, uint32> g_wipeCount;
+    uint32 g_rrCounter = 0;  // round-robin counter for dungeon selection
 }
 
 std::vector<DungeonPort> const BotDungeonPorts = {
+    {20, 45,  34,   54.23f,      0.28f,   -18.34f,   6.26f},    // Stormwind Stockade — FULL NAVMESH
     {15, 26,  36,  -16.4f,    -383.07f,    61.78f,   1.86f},    // Deadmines — FULL NAVMESH
     {16, 30,  33, -229.135f,  2109.18f,    76.8898f, 1.267f},   // Shadowfang Keep — FULL NAVMESH
     {19, 40,  48, -151.89f,    106.96f,   -39.87f,   4.53f},    // Blackfathom Deeps — FULL NAVMESH
-    {15, 45,  34,   54.23f,      0.28f,   -18.34f,   6.26f},    // Stormwind Stockade — FULL NAVMESH
     {37, 55, 129, 2529.98f,    1044.96f,    46.59f,   1.77f},   // Razorfen Downs — FULL NAVMESH (enemies ~35-40)
     {28, 55,  70,    5.25f,     -2.64f,     1.93f,   0.02f},    // Uldaman — FULL NAVMESH
     {29, 60,  90, -7599.52f,   806.29f,   1569.7f,   6.10f},    // Zul'Farak — FULL NAVMESH
@@ -634,7 +635,25 @@ private:
                         if (minLvl >= d.minLvl && maxLvl <= d.maxLvl)
                             matches.push_back(&d);
                     if (!matches.empty())
-                        selected = matches[urand(0, matches.size() - 1)];
+                    {
+                        // Global round-robin: start at g_rrCounter and find the
+                        // first eligible dungeon, wrapping around the port list.
+                        uint32 const portCount = static_cast<uint32>(BotDungeonPorts.size());
+                        for (uint32 i = 0; i < portCount; ++i)
+                        {
+                            uint32 idx = (g_rrCounter + i) % portCount;
+                            if (minLvl >= BotDungeonPorts[idx].minLvl && maxLvl <= BotDungeonPorts[idx].maxLvl)
+                            {
+                                selected = &BotDungeonPorts[idx];
+                                g_rrCounter = (idx + 1) % portCount;
+                                break;
+                            }
+                        }
+                        // If none matched (shouldn't happen if matches is non-empty),
+                        // fall back to the first match.
+                        if (!selected)
+                            selected = matches[0];
+                    }
 
                     if (!selected)
                     {
@@ -643,6 +662,9 @@ private:
                         Fail();
                         continue;
                     }
+
+                    LOG_INFO("playerbots", "mod-bot-dungeon-queue: group {} (levels {}-{}) picks map {} ({} matches)",
+                             tank->GetName(), minLvl, maxLvl, selected->mapId, matches.size());
 
                     // Sync difficulty, unbind old binds, pre-bind all members
                     bool isRaid = sMapStore.LookupEntry(selected->mapId)->IsRaid();
