@@ -23,6 +23,7 @@
 #include "AiFactory.h"
 
 #include "Ai/Dungeon/DungeonClear/Util/DcRun.h"
+#include "Ai/Dungeon/DungeonClear/Util/DcLeaderSignal.h"
 #include "Ai/Dungeon/DungeonClear/Util/NavmeshSnap.h"
 #include "DcStrategyGate.h"
 
@@ -207,7 +208,7 @@ public:
         {
             m_heartbeatTimer = 0;
             LOG_INFO("playerbots", "mod-bot-dungeon-queue: heartbeat OK");
-            // Log real-time positions of bots in dungeons (for diagnostics)
+            // Log real-time positions and DC state of bots in dungeons
             for (PlayerBotMap::const_iterator it = sRandomPlayerbotMgr.GetPlayerBotsBegin();
                  it != sRandomPlayerbotMgr.GetPlayerBotsEnd(); ++it)
             {
@@ -219,9 +220,22 @@ public:
                     continue;
                 InstanceMap* im = m->ToInstanceMap();
                 uint32 instId = im ? im->GetInstanceId() : 0;
-                LOG_INFO("playerbots", "  pos {}: map={} inst={} ({:.1f}, {:.1f}, {:.1f})",
+                PlayerbotAI* ai = GET_PLAYERBOT_AI(bot);
+                bool isTank = ai && PlayerbotAI::IsTank(bot);
+                bool dcEnabled = false;
+                bool dcPaused = false;
+                bool isLeader = false;
+                if (ai)
+                {
+                    DcRunState& rs = DcRun::Of(ai->GetAiObjectContext());
+                    dcEnabled = rs.enabled;
+                    dcPaused = rs.paused;
+                    isLeader = DcLeaderSignal::IsDungeonClearLeader(bot);
+                }
+                LOG_INFO("playerbots", "  dc {}: map={} inst={} ({:.1f}, {:.1f}, {:.1f}) tank={} en={} pause={} lead={}",
                          bot->GetName(), m->GetId(), instId,
-                         bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+                         bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
+                         isTank, dcEnabled, dcPaused, isLeader);
             }
         }
 
