@@ -831,9 +831,10 @@ private:
             ai->ChangeStrategy("+dungeon clear", BOT_STATE_NON_COMBAT);
         if (!ai->HasStrategy("dungeon clear combat", BOT_STATE_COMBAT))
             ai->ChangeStrategy("+dungeon clear combat", BOT_STATE_COMBAT);
-        // Re-add the tank strategy in case it was lost during teleport engine init.
-        // Safe for non-tanks (creators["tank"] not found → no-op).
-        if (!ai->HasStrategy("tank", BOT_STATE_COMBAT) && !ai->HasStrategy("bear", BOT_STATE_COMBAT))
+        // Re-add the tank strategy after teleport engine init, but only for
+        // bots the queue detected as tanks via spec tab (GetBotRole).
+        bool const isTanked = (GetBotRole(player) & PLAYER_ROLE_TANK);
+        if (isTanked && !ai->HasStrategy("tank", BOT_STATE_COMBAT) && !ai->HasStrategy("bear", BOT_STATE_COMBAT))
             ai->ChangeStrategy("+tank", BOT_STATE_COMBAT);
 
         DcRunState& rs = DcRun::Of(ai->GetAiObjectContext());
