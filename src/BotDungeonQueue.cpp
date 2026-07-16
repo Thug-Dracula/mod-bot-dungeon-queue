@@ -386,7 +386,38 @@ public:
             }
 
             uint32 const elapsed = GameTime::GetGameTime().count() - deathTime;
-            if (!fullWipe && elapsed < 360)
+
+            // If no one alive in the group can resurrect, release immediately
+            // instead of waiting 6 minutes. Res classes: Priest, Paladin, Shaman, Druid.
+            bool canResurrect = false;
+            if (!fullWipe && group)
+            {
+                for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                {
+                    Player* mbr = ref->GetSource();
+                    if (!mbr || mbr == bot || !mbr->IsAlive() || mbr->GetMapId() != bot->GetMapId())
+                        continue;
+                    switch (mbr->getClass())
+                    {
+                        case CLASS_PRIEST:
+                        case CLASS_PALADIN:
+                        case CLASS_SHAMAN:
+                        case CLASS_DRUID:
+                            canResurrect = true;
+                            break;
+                    }
+                    if (canResurrect)
+                        break;
+                }
+            }
+
+            if (!fullWipe && !canResurrect)
+            {
+                LOG_INFO("playerbots", "mod-bot-dungeon-queue: {} dead in {} — no res available, releasing spirit",
+                         bot->GetName(), m->GetId());
+                fullWipe = true;
+            }
+            else if (!fullWipe && elapsed < 360)
                 continue;
 
             LOG_INFO("playerbots", "mod-bot-dungeon-queue: {} dead {} in {} ({}) — releasing spirit",
