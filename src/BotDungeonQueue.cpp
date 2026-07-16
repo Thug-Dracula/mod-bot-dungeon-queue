@@ -140,8 +140,17 @@ static void EnableDcOn(Player* p, bool isTank = false)
     if (!ai->HasStrategy("dungeon clear combat", BOT_STATE_COMBAT))
         ai->ChangeStrategy("+dungeon clear combat", BOT_STATE_COMBAT);
     // Tank strategy is class-specific and only registered for the combat engine
-    if (isTank && !ai->HasStrategy("tank", BOT_STATE_COMBAT))
-        ai->ChangeStrategy("+tank", BOT_STATE_COMBAT);
+    if (isTank)
+    {
+        bool had = ai->HasStrategy("tank", BOT_STATE_COMBAT);
+        bool hadBear = ai->HasStrategy("bear", BOT_STATE_COMBAT);
+        if (!had)
+            ai->ChangeStrategy("+tank", BOT_STATE_COMBAT);
+        bool now = ai->HasStrategy("tank", BOT_STATE_COMBAT);
+        bool nowBear = ai->HasStrategy("bear", BOT_STATE_COMBAT);
+        LOG_INFO("playerbots", "mod-bot-dungeon-queue: tank strat for {}: had={}/{} now={}/{}",
+                 p->GetName(), had, hadBear, now, nowBear);
+    }
     DcRunState& rs = DcRun::Of(ai->GetAiObjectContext());
     rs = DcRunState{};
     // Enable DC for ALL party members so the non-combat multiplier suppresses
@@ -229,17 +238,19 @@ public:
                 bool dcEnabled = false;
                 bool dcPaused = false;
                 bool isLeader = false;
+                bool hasBear = false;
                 if (ai)
                 {
                     DcRunState& rs = DcRun::Of(ai->GetAiObjectContext());
                     dcEnabled = rs.enabled;
                     dcPaused = rs.paused;
                     isLeader = DcLeaderSignal::IsDungeonClearLeader(bot);
+                    hasBear = ai->HasStrategy("tank", BOT_STATE_COMBAT) || ai->HasStrategy("bear", BOT_STATE_COMBAT);
                 }
-                LOG_INFO("playerbots", "  dc {}: map={} inst={} ({:.1f}, {:.1f}, {:.1f}) tank={} en={} pause={} lead={}",
+                LOG_INFO("playerbots", "  dc {}: map={} inst={} ({:.1f}, {:.1f}, {:.1f}) tank={} en={} pause={} lead={} bear={}",
                          bot->GetName(), m->GetId(), instId,
                          bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
-                         isTank, dcEnabled, dcPaused, isLeader);
+                         isTank, dcEnabled, dcPaused, isLeader, hasBear);
             }
         }
 
