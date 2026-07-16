@@ -286,6 +286,35 @@ public:
             }
         }
 
+        // Tank strategy re-add: teleport engine init can strip the tank strategy
+        // even when DcRunState.enabled stays true. Re-add for any tank-role bot
+        // that's missing it. Uses GetBotRole (spec tab) for detection since
+        // PlayerbotAI::IsTank might fail without the strategy present.
+        for (PlayerBotMap::const_iterator it = sRandomPlayerbotMgr.GetPlayerBotsBegin();
+             it != sRandomPlayerbotMgr.GetPlayerBotsEnd(); ++it)
+        {
+            Player* bot = it->second;
+            if (!bot || !bot->IsInWorld() || !bot->IsAlive())
+                continue;
+            Map* m = bot->GetMap();
+            if (!m || !m->IsDungeon())
+                continue;
+            if (!(GetBotRole(bot) & PLAYER_ROLE_TANK))
+                continue;
+            PlayerbotAI* ai = GET_PLAYERBOT_AI(bot);
+            if (!ai)
+                continue;
+            bool hasTankStrat = ai->HasStrategy("tank", BOT_STATE_COMBAT) ||
+                                ai->HasStrategy("bear", BOT_STATE_COMBAT) ||
+                                ai->HasStrategy("blood", BOT_STATE_COMBAT);
+            if (!hasTankStrat)
+            {
+                LOG_INFO("playerbots", "mod-bot-dungeon-queue: re-adding tank strategy for {} in map {}",
+                         bot->GetName(), m->GetId());
+                ai->ChangeStrategy("+tank", BOT_STATE_COMBAT);
+            }
+        }
+
         if (m_skullSyncTimer >= 100)
         {
             m_skullSyncTimer = 0;
@@ -696,8 +725,10 @@ private:
                     // IsDungeonClearLeader which can transiently return false
                     // due to leader cache timing. A tank by spec means the
                     // group has proper leadership even if DC hasn't resolved it.
-                    if ((GetBotRole(m) & PLAYER_ROLE_TANK))
-                        hasLead = true;
+                    {
+                        uint8 role = GetBotRole(m);
+                        if (role & PLAYER_ROLE_TANK)
+                            hasLead = true;
                     }
                 }
                 if (inThisDungeon > 1 && hasLead)
@@ -707,8 +738,7 @@ private:
             LOG_INFO("playerbots", "mod-bot-dungeon-queue: stuck cleanup teleporting {} ({}) home from map {}",
                      bot->GetName(), group ? "solo survivor" : "ungrouped", bot->GetMapId());
             bot->TeleportTo(bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ, 0.0f);
-            // Disband the group so evicted bots become eligible for re-queuing
-            // (IsBotEligible rejects grouped bots).
+            // Disband group so evicted bots become eligible for re-queuing
             if (group)
                 group->Disband();
             ++cleaned;
@@ -836,11 +866,6 @@ private:
             ai->ChangeStrategy("+dungeon clear", BOT_STATE_NON_COMBAT);
         if (!ai->HasStrategy("dungeon clear combat", BOT_STATE_COMBAT))
             ai->ChangeStrategy("+dungeon clear combat", BOT_STATE_COMBAT);
-        // Re-add the tank strategy after teleport engine init, but only for
-        // bots the queue detected as tanks via spec tab (GetBotRole).
-        bool const isTanked = (GetBotRole(player) & PLAYER_ROLE_TANK);
-        if (isTanked && !ai->HasStrategy("tank", BOT_STATE_COMBAT) && !ai->HasStrategy("bear", BOT_STATE_COMBAT))
-            ai->ChangeStrategy("+tank", BOT_STATE_COMBAT);
 
         DcRunState& rs = DcRun::Of(ai->GetAiObjectContext());
         // Trust the state from EnableDcOn (which uses the queue's GetBotRole
