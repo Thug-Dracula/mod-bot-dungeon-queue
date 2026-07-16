@@ -139,7 +139,8 @@ static void EnableDcOn(Player* p, bool isTank = false)
         ai->ChangeStrategy("+tank", BOT_STATE_COMBAT);
     DcRunState& rs = DcRun::Of(ai->GetAiObjectContext());
     rs = DcRunState{};
-    rs.enabled = true;
+    // Only the tank leads the run — followers resolve the tank via PartyTank.
+    rs.enabled = isTank;
 }
 
 class BotDungeonQueueWorldScript : public WorldScript
@@ -217,6 +218,38 @@ public:
                 LOG_INFO("playerbots", "  pos {}: map={} inst={} ({:.1f}, {:.1f}, {:.1f})",
                          bot->GetName(), m->GetId(), instId,
                          bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+            }
+        }
+
+        // DC watchdog: re-enable dungeon clear on the tank if it was
+        // disabled by death but the tank is alive and still in a dungeon.
+        for (PlayerBotMap::const_iterator it = sRandomPlayerbotMgr.GetPlayerBotsBegin();
+             it != sRandomPlayerbotMgr.GetPlayerBotsEnd(); ++it)
+        {
+            Player* bot = it->second;
+            if (!bot || !bot->IsInWorld() || !bot->IsAlive())
+                continue;
+            Map* m = bot->GetMap();
+            if (!m || !m->IsDungeon())
+                continue;
+            if (!PlayerbotAI::IsTank(bot))
+                continue;
+            PlayerbotAI* ai = GET_PLAYERBOT_AI(bot);
+            if (!ai)
+                continue;
+            DcRunState& rs = DcRun::Of(ai->GetAiObjectContext());
+            if (!rs.enabled)
+            {
+                LOG_INFO("playerbots", "mod-bot-dungeon-queue: DC watchdog re-enabling {} in map {}",
+                         bot->GetName(), m->GetId());
+                rs = DcRunState{};
+                rs.enabled = true;
+                if (!ai->HasStrategy("dungeon clear", BOT_STATE_NON_COMBAT))
+                    ai->ChangeStrategy("+dungeon clear", BOT_STATE_NON_COMBAT);
+                if (!ai->HasStrategy("dungeon clear combat", BOT_STATE_COMBAT))
+                    ai->ChangeStrategy("+dungeon clear combat", BOT_STATE_COMBAT);
+                if (!ai->HasStrategy("tank", BOT_STATE_COMBAT))
+                    ai->ChangeStrategy("+tank", BOT_STATE_COMBAT);
             }
         }
 
@@ -741,7 +774,11 @@ private:
             ai->ChangeStrategy("+dungeon clear combat", BOT_STATE_COMBAT);
 
         DcRunState& rs = DcRun::Of(ai->GetAiObjectContext());
-        if (!rs.enabled)
+        // Only the tank leads the run; followers resolve PartyTank from
+        // the leader's enabled flag. Setting enabled on everyone caused
+        // every bot to try driving the advance simultaneously.
+        bool const isTank = PlayerbotAI::IsTank(player);
+        if (!rs.enabled && isTank)
         {
             rs = DcRunState{};
             rs.enabled = true;
