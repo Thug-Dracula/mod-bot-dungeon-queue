@@ -144,8 +144,12 @@ static void EnableDcOn(Player* p, bool isTank = false)
         ai->ChangeStrategy("+tank", BOT_STATE_COMBAT);
     DcRunState& rs = DcRun::Of(ai->GetAiObjectContext());
     rs = DcRunState{};
-    // Only the tank leads the run — followers resolve the tank via PartyTank.
-    rs.enabled = isTank;
+    // Enable DC for ALL party members so the non-combat multiplier suppresses
+    // wander and proactive-engage for everyone. The advance trigger is gated by
+    // IsDungeonClearLeader which correctly resolves the tank — followers with
+    // enabled=true won't try to drive but will stay with the group instead of
+    // falling into New RPG. Only the actual tank gets the tank strategy.
+    rs.enabled = true;
 }
 
 class BotDungeonQueueWorldScript : public WorldScript
