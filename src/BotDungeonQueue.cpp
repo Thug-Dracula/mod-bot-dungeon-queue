@@ -215,6 +215,32 @@ public:
             }
         }
 
+        // Stale-group cleanup: disband any groups on the world map (bots stuck
+        // in groups after eviction from before the disband fix was deployed).
+        if (!m_staleGroupCleanupDone)
+        {
+            m_staleGroupCleanupDone = true;
+            uint32 disbanded = 0;
+            for (PlayerBotMap::const_iterator it = sRandomPlayerbotMgr.GetPlayerBotsBegin();
+                 it != sRandomPlayerbotMgr.GetPlayerBotsEnd(); ++it)
+            {
+                Player* bot = it->second;
+                if (!bot || !bot->IsInWorld())
+                    continue;
+                Map* m = bot->GetMap();
+                if (m && m->IsDungeon())
+                    continue;
+                Group* group = bot->GetGroup();
+                if (!group)
+                    continue;
+                group->Disband();
+                ++disbanded;
+            }
+            if (disbanded)
+                LOG_INFO("playerbots", "mod-bot-dungeon-queue: stale-group cleanup disbanded {} group(s) on world map",
+                         disbanded);
+        }
+
         m_queueTimer += diff;
         m_cleanupTimer += diff;
         m_skullSyncTimer += diff;
@@ -519,6 +545,7 @@ private:
     uint32 m_heartbeatTimer = 0;
     bool m_startupCleanupDone = false;
     bool m_delayedCleanupDone = false;
+    bool m_staleGroupCleanupDone = false;
 
     struct PendingTeleport
     {
