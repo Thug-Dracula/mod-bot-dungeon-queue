@@ -129,6 +129,8 @@ static void TeleportGroupHome(Group* group)
             continue;
         m->TeleportTo(m->m_homebindMapId, m->m_homebindX, m->m_homebindY, m->m_homebindZ, 0.0f);
     }
+    // Disband so evicted bots become eligible for re-queuing
+    group->Disband();
 }
 
 static void EnableDcOn(Player* p, bool isTank = false)
