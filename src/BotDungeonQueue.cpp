@@ -795,6 +795,19 @@ public:
             // Without this flag, the bot may revive at spirit healer, which means
             // OnPlayerReleasedGhost never fires and the wipe counter is skipped.
             sRandomPlayerbotMgr.SetValue(bot->GetGUID().GetCounter(), "pending_teleport", 1);
+            // Fallback: ensure death_map_id / death_instance_id are set before
+            // the repop request. OnPlayerKilledByCreature normally stashes these,
+            // but if the bot died from a non-creature source (DoT, environment,
+            // fall damage) that hook never fires — leaving them 0. Without them,
+            // OnPlayerReleasedGhost returns early at line 1538-1539 (ghost is on
+            // the continent map, death_map_id is missing), and the step 2 ghost
+            // teleport is never queued — bot is stuck at the graveyard forever.
+            if (sRandomPlayerbotMgr.GetValue(bot->GetGUID().GetCounter(), "death_map_id") == 0)
+            {
+                sRandomPlayerbotMgr.SetValue(bot->GetGUID().GetCounter(), "death_map_id", m->GetId());
+                if (InstanceMap* im = m->ToInstanceMap())
+                    sRandomPlayerbotMgr.SetValue(bot->GetGUID().GetCounter(), "death_instance_id", im->GetInstanceId());
+            }
             WorldPacket data(CMSG_REPOP_REQUEST);
             data << uint8(0);
             bot->GetSession()->HandleRepopRequestOpcode(data);
