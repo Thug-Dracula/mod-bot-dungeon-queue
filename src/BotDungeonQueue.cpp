@@ -1292,6 +1292,16 @@ private:
                 getMSTimeDiff(entryIt->second, nowMs) < graceMs)
                 continue;
 
+            // No entry timestamp: the bot entered the dungeon before the
+            // timer was set (e.g. after a crash recovery) or its entry was
+            // cleaned up (too old). Don't evict immediately — give it a
+            // full grace period from now to regroup / finish.
+            if (entryIt == g_dungeonEntryTimeMs.end())
+            {
+                g_dungeonEntryTimeMs[bot->GetGUID()] = nowMs;
+                continue;
+            }
+
             Group* group = bot->GetGroup();
             if (group)
             {
@@ -1439,38 +1449,50 @@ public:
         // cleared when a player-cast resurrection happens (OnPlayerResurrect).
         sRandomPlayerbotMgr.SetValue(player->GetGUID().GetCounter(), "pending_teleport", 1);
 
-        // Count tank deaths as wipes. The tank dying is the most reliable
-        // signal that something went wrong — simpler and more robust than
-        // trying to detect "full party wipe" (which fails on dungeons with
-        // continental graveyards like BFD where OnPlayerReleasedGhost never
-        // runs the normal path).
+        // Count tank deaths as wipes only when it's a genuine full-party
+        // wipe (all party members dead). A tank death that the group
+        // recovers from (healer rezzes) should not consume a retry.
         if (instId)
         {
             PlayerbotAI* ai = GET_PLAYERBOT_AI(player);
             if (ai && PlayerbotAI::IsTank(player))
             {
-                bool const alreadyCounted = g_wipeCounted.count(instId) > 0;
-                if (!alreadyCounted)
+                // Check if all party members are dead (full wipe)
+                bool fullWipe = true;
+                if (Group* g = player->GetGroup())
                 {
-                    ++g_wipeCount[instId];
-                    g_wipeCounted.insert(instId);
+                    for (GroupReference* ref = g->GetFirstMember(); ref; ref = ref->next())
+                    {
+                        Player* m = ref->GetSource();
+                        if (m && m != player && m->IsAlive() && m->GetMapId() == player->GetMapId())
+                        {
+                            fullWipe = false;
+                            break;
+                        }
+                    }
                 }
-                uint32 const maxWipes = BotDungeonQueueConfig::MaxWipesBeforeEvict();
-                uint32 wipes = g_wipeCount[instId];
-                LOG_INFO("playerbots", "mod-bot-dungeon-queue: tank {} died in map {} — wipe {}/{}",
-                         player->GetName(), mapId, wipes, maxWipes);
-
-                // If the group used all its retries on this death, evict them
-                // immediately instead of waiting for a ghost release that may
-                // never reach OnPlayerReleasedGhost (BFD continental graveyard).
-                if (wipes >= maxWipes)
+                if (fullWipe)
                 {
-                    LOG_INFO("playerbots", "mod-bot-dungeon-queue: max wipes ({}) reached on tank death for inst {} — evicting group",
-                             maxWipes, instId);
-                    g_wipeCount.erase(instId);
-                    g_wipeCounted.erase(instId);
-                    if (Group* g = player->GetGroup())
-                        TeleportGroupHome(g);
+                    bool const alreadyCounted = g_wipeCounted.count(instId) > 0;
+                    if (!alreadyCounted)
+                    {
+                        ++g_wipeCount[instId];
+                        g_wipeCounted.insert(instId);
+                    }
+                    uint32 const maxWipes = BotDungeonQueueConfig::MaxWipesBeforeEvict();
+                    uint32 wipes = g_wipeCount[instId];
+                    LOG_INFO("playerbots", "mod-bot-dungeon-queue: tank {} full party wipe in map {} — wipe {}/{}",
+                             player->GetName(), mapId, wipes, maxWipes);
+
+                    if (wipes >= maxWipes)
+                    {
+                        LOG_INFO("playerbots", "mod-bot-dungeon-queue: max wipes ({}) reached on tank death for inst {} — evicting group",
+                                 maxWipes, instId);
+                        g_wipeCount.erase(instId);
+                        g_wipeCounted.erase(instId);
+                        if (Group* g = player->GetGroup())
+                            TeleportGroupHome(g);
+                    }
                 }
             }
         }
