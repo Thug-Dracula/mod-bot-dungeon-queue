@@ -686,10 +686,27 @@ public:
             bool fullWipe = true;
             if (group)
             {
+                uint32 const deathTimeNow = static_cast<uint32>(GameTime::GetGameTime().count());
                 for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
                 {
                     Player* mbr = ref->GetSource();
-                    if (mbr && mbr != bot && mbr->IsAlive() && mbr->GetMapId() == bot->GetMapId())
+                    if (!mbr || mbr == bot)
+                        continue;
+                    // Count a member as alive if they are physically alive OR
+                    // have no recent death_time (they haven't died in this fight).
+                    // This catches the case where MULTIPLE bots die in the same
+                    // encounter but the sweep processes them one tick apart —
+                    // by the time bot A is processed, bot B may still be alive
+                    // (yet about to die next tick). Without this, a full party
+                    // wipe is never detected and everyone gets "solo death" —
+                    // which ghosts back to an empty, disbanded group.
+                    if (mbr->IsAlive())
+                    {
+                        fullWipe = false;
+                        break;
+                    }
+                    uint32 mDeathTime = sRandomPlayerbotMgr.GetValue(mbr->GetGUID().GetCounter(), "death_time");
+                    if (!mDeathTime || deathTimeNow - mDeathTime > 5)
                     {
                         fullWipe = false;
                         break;
