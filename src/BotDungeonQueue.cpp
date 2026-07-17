@@ -122,6 +122,28 @@ namespace
     uint32 g_rrCounter = 0;  // round-robin counter for dungeon selection
     std::unordered_map<ObjectGuid, DungeonPort> g_pendingGhostTeleports;
     std::map<uint32, uint32> g_resurrectionHold;  // instanceId -> hold start (game time secs)
+    // Tracks last-known position of each bot for stranding detection.
+    // Key: bot GUID. Value: packed position (x*1000, y*1000, z*1000) from
+    // the previous heartbeat. If a follower hasn't moved for one full
+    // heartbeat cycle while the tank is far away, teleport them to the tank.
+    std::unordered_map<ObjectGuid, Position> g_lastPosition;
+}
+
+// Apply permanent Water Breathing to a bot. The breath timer (getMaxTimer)
+// returns DISABLED_MIRROR_TIMER when the player has any SPELL_AURA_MOD_WATER_BREATHING
+// aura, making them immune to drowning regardless of underwater duration.
+// We cast spell 131 (Water Breathing) and set its duration to -1 (permanent)
+// so it never expires and never needs refreshing.
+static void ApplyPermanentWaterBreathing(Player* player)
+{
+    if (!player || player->HasAuraType(SPELL_AURA_MOD_WATER_BREATHING))
+        return;
+    player->CastSpell(player, 131, true);
+    if (Aura* aura = player->GetAura(131, player->GetGUID()))
+    {
+        aura->SetDuration(-1);
+        aura->SetMaxDuration(-1);
+    }
 }
 
 constexpr uint32 RES_HOLD_TIMEOUT_SECS = 30u;
@@ -404,6 +426,9 @@ public:
                      bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
                      isTank, dcEnabled, dcPaused, isLeader, hasBear);
 
+            // Keep bots immune to drowning while in dungeons
+            ApplyPermanentWaterBreathing(bot);
+
             // Combat summary for this bot
             if (auto const* cs = CombatMonitor::Get(bot->GetGUID().GetCounter()))
             {
@@ -411,7 +436,67 @@ public:
                     LOG_INFO("playerbots", "  dmg {}: dealt={} taken={} heal={} ({} casts)",
                              bot->GetName(), cs->damageDealt, cs->damageTaken,
                              cs->healingDone, cs->healsCast);
+
+                // Warning: non-healer bot in combat dealing zero damage —
+                // indicates the bot is group-flagged in combat or stuck
+                // without a valid target to attack.
+                if (bot->IsInCombat() && cs->damageDealt == 0 && cs->damageTaken == 0 && cs->healingDone == 0)
+                {
+                    bool const assistWanted = ai && DcLeaderSignal::IsLeaderFightAssistWanted(bot);
+                    LOG_INFO("playerbots", "  !!! {} inCombat 0/0/0 assist={} en={} pause={}",
+                             bot->GetName(), assistWanted ? 1 : 0,
+                             dcEnabled ? 1 : 0, dcPaused ? 1 : 0);
+                }
             }
+
+            // Diagnose: is this bot's assist-wanted gate passing?
+            if (ai)
+            {
+                bool const res = DcLeaderSignal::IsLeaderFightAssistWanted(bot);
+                LOG_INFO("playerbots", "  ast {}: res={} inCombat={} en={} pause={} lead={}",
+                         bot->GetName(), res ? 1 : 0,
+                         bot->IsInCombat() ? 1 : 0,
+                         dcEnabled ? 1 : 0, dcPaused ? 1 : 0, isLeader ? 1 : 0);
+            }
+
+            // Stranding detection: if a follower hasn't moved since the last
+            // heartbeat while the tank is far away, teleport them to the tank
+            // (typical cause: navmesh gap between dungeon levels).
+            if (!isLeader && ai && !bot->IsInCombat())
+            {
+                auto prev = g_lastPosition.find(bot->GetGUID());
+                if (prev != g_lastPosition.end())
+                {
+                    float const dx = bot->GetPositionX() - prev->second.GetPositionX();
+                    float const dy = bot->GetPositionY() - prev->second.GetPositionY();
+                    float const dz = bot->GetPositionZ() - prev->second.GetPositionZ();
+                    bool const moved = (dx*dx + dy*dy + dz*dz) > 1.0f;
+                    if (!moved)
+                    {
+                        Player* tank = DcLeaderSignal::FindLeaderTank(bot);
+                        if (tank && tank->IsInWorld() && tank->GetMapId() == bot->GetMapId())
+                        {
+                            float const dist = bot->GetExactDist2d(tank);
+                            if (dist > 40.0f)
+                            {
+                                LOG_INFO("playerbots", "mod-bot-dungeon-queue: {} stranded {:.0f}yd from tank {} at ({:.1f}, {:.1f}, {:.1f}) — teleporting to tank",
+                                         bot->GetName(), dist, tank->GetName(),
+                                         tank->GetPositionX(), tank->GetPositionY(),
+                                         tank->GetPositionZ());
+                                bot->TeleportTo(bot->GetMapId(),
+                                                tank->GetPositionX(),
+                                                tank->GetPositionY(),
+                                                tank->GetPositionZ(),
+                                                tank->GetOrientation());
+                            }
+                        }
+                    }
+                }
+            }
+            // Update last known position
+            g_lastPosition[bot->GetGUID()] = Position(bot->GetPositionX(),
+                                                       bot->GetPositionY(),
+                                                       bot->GetPositionZ());
         }
 
         // Reset combat stats for next 60s window
@@ -625,6 +710,11 @@ public:
             LOG_INFO("playerbots", "mod-bot-dungeon-queue: {} dead {} in {} ({}) — releasing spirit",
                      bot->GetName(), fullWipe ? "with all party dead" : "solo",
                      m->GetId(), fullWipe ? "full wipe" : "solo death");
+            // Set pending_teleport flag to prevent AcceptResurrectAction from
+            // accepting a spirit healer rez before the ghost release completes.
+            // Without this flag, the bot may revive at spirit healer, which means
+            // OnPlayerReleasedGhost never fires and the wipe counter is skipped.
+            sRandomPlayerbotMgr.SetValue(bot->GetGUID().GetCounter(), "pending_teleport", 1);
             WorldPacket data(CMSG_REPOP_REQUEST);
             data << uint8(0);
             bot->GetSession()->HandleRepopRequestOpcode(data);
@@ -645,7 +735,15 @@ public:
                 continue;
             Group* g = bot->GetGroup();
             if (!g)
+            {
+                // Ungrouped and alone in a dungeon — teleport home immediately
+                // instead of waiting for the stuck cleanup (30s delay).
+                LOG_INFO("playerbots", "mod-bot-dungeon-queue: orphaned survivor {} ungrouped in map {} — teleporting home",
+                         bot->GetName(), m->GetId());
+                bot->TeleportTo(bot->m_homebindMapId, bot->m_homebindX,
+                                bot->m_homebindY, bot->m_homebindZ, 0.0f);
                 continue;
+            }
 
             // Check if this group has a living tank on the same map
             bool hasTank = false;
@@ -662,7 +760,26 @@ public:
                 }
             }
             if (hasTank)
-                continue;
+            {
+                // Tank is alive but check if the group is too small to continue.
+                // If Shiloh (tank) returned solo but the rest of the party didn't,
+                // the group can't function — evict rather than leaving her alone.
+                uint32 inDungeon = 0;
+                for (GroupReference* ref = g->GetFirstMember(); ref; ref = ref->next())
+                {
+                    Player* mbr = ref->GetSource();
+                    if (mbr && mbr->IsInWorld() && mbr->GetMapId() == bot->GetMapId())
+                        ++inDungeon;
+                }
+                if (inDungeon >= 3)
+                    continue;
+                LOG_INFO("playerbots", "mod-bot-dungeon-queue: tank {} alive but only {} members in map {} — group broken, evicting",
+                         bot->GetName(), inDungeon, m->GetId());
+                // Fall through to wipe counting + eviction below
+                goto do_evict;
+            }
+            else
+            {
 
             // No tank — check if anyone can res the dead tank
             bool canResurrect = false;
@@ -686,9 +803,34 @@ public:
             if (canResurrect)
                 continue;
 
+            } // end else (no tank)
+
+        do_evict:
             // Tank dead/missing, no res available — evict the whole group
-            LOG_INFO("playerbots", "mod-bot-dungeon-queue: orphaned survivor {} in map {} (no tank, no res) — teleporting group home",
-                     bot->GetName(), m->GetId());
+            // and count this as a wipe (the group effectively wiped even if
+            // some members are still alive — they can't continue without a tank).
+            uint32 const maxWipes = BotDungeonQueueConfig::MaxWipesBeforeEvict();
+            if (InstanceMap* im_map = m->ToInstanceMap())
+            {
+                uint32 const instId = im_map->GetInstanceId();
+                bool const alreadyCounted = g_wipeCounted.count(instId) > 0;
+                if (!alreadyCounted)
+                {
+                    ++g_wipeCount[instId];
+                    g_wipeCounted.insert(instId);
+                }
+                uint32 wipes = g_wipeCount[instId];
+                LOG_INFO("playerbots", "mod-bot-dungeon-queue: orphaned survivor {} in map {} (no tank, no res) — wipe {}/{}",
+                         bot->GetName(), m->GetId(), wipes, maxWipes);
+
+                if (wipes >= maxWipes)
+                {
+                    LOG_INFO("playerbots", "mod-bot-dungeon-queue: max wipes ({}) reached for inst {} — evicting group",
+                             maxWipes, instId);
+                    g_wipeCount.erase(instId);
+                    g_wipeCounted.erase(instId);
+                }
+            }
             TeleportGroupHome(g);
         }
 
@@ -735,6 +877,38 @@ public:
 
             LOG_INFO("playerbots", "mod-bot-dungeon-queue: dungeon {} complete for {} (mask {:08x} all {:08x}), teleporting group home",
                      m->GetId(), bot->GetName(), mask, allBits);
+
+            // Extended completion log
+            MapEntry const* mapEntry = sMapStore.LookupEntry(m->GetId());
+            char const* mapName = mapEntry ? mapEntry->name[0] : "unknown";
+            uint32 const elapsedSec = getMSTimeDiff(g_dungeonEntryTimeMs[bot->GetGUID()], getMSTime()) / 1000;
+            uint32 const wipes = g_wipeCount[im->GetInstanceId()];
+            LOG_INFO("playerbots", "mod-bot-dungeon-queue: === DUNGEON COMPLETE: {} (map {}) ===",
+                     mapName, m->GetId());
+            LOG_INFO("playerbots", "mod-bot-dungeon-queue:   completed by {} | time={}s | wipes={}",
+                     bot->GetName(), elapsedSec, wipes);
+            LOG_INFO("playerbots", "mod-bot-dungeon-queue:   group members:");
+            if (Group* g = bot->GetGroup())
+            {
+                for (GroupReference* ref = g->GetFirstMember(); ref; ref = ref->next())
+                {
+                    Player* mbr = ref->GetSource();
+                    if (!mbr)
+                        continue;
+                    PlayerbotAI* ai = GET_PLAYERBOT_AI(mbr);
+                    char const* role = "?";
+                    if (ai && PlayerbotAI::IsTank(mbr)) role = "tank";
+                    else if (ai && PlayerbotAI::IsHeal(mbr)) role = "heal";
+                    else if (ai) role = "dps";
+                    static char const* clsNames[12] = {"","war","pal","hun","rog","pri","dk","sha","mag","warl","monk","dru"};
+                    uint8 cls = mbr->getClass();
+                    char const* clsName = (cls > 0 && cls < 12) ? clsNames[cls] : "?";
+                    LOG_INFO("playerbots", "mod-bot-dungeon-queue:     {} ({}) - {} lvl{}", mbr->GetName(),
+                             role, clsName, mbr->GetLevel());
+                }
+            }
+            LOG_INFO("playerbots", "mod-bot-dungeon-queue: ====================================");
+
             if (Group* g = bot->GetGroup())
                 TeleportGroupHome(g);
             else
@@ -1174,8 +1348,59 @@ public:
         Map* map = player->GetMap();
         if (!map || !map->IsDungeon())
             return;
+        InstanceMap* im = map->ToInstanceMap();
+        uint32 const instId = im ? im->GetInstanceId() : 0;
+        uint32 const mapId = map->GetId();
+
         sRandomPlayerbotMgr.SetValue(player->GetGUID().GetCounter(), "death_time",
                                      static_cast<uint32>(GameTime::GetGameTime().count()));
+        // Stash the map+instance so OnPlayerReleasedGhost can still find the
+        // dungeon even when the spirit healer graveyard lives on the continent
+        // map (e.g. BFD) — the ghost appears on Kalimdor, not inside the
+        // instance, so player->GetMap().IsDungeon() is false there.
+        sRandomPlayerbotMgr.SetValue(player->GetGUID().GetCounter(), "death_map_id", mapId);
+        sRandomPlayerbotMgr.SetValue(player->GetGUID().GetCounter(), "death_instance_id", instId);
+
+        // Set pending_teleport flag to block spirit healer rez. The bot should
+        // corpse-run instead of rezzing at the spirit healer. This flag is
+        // cleared when a player-cast resurrection happens (OnPlayerResurrect).
+        sRandomPlayerbotMgr.SetValue(player->GetGUID().GetCounter(), "pending_teleport", 1);
+
+        // Count tank deaths as wipes. The tank dying is the most reliable
+        // signal that something went wrong — simpler and more robust than
+        // trying to detect "full party wipe" (which fails on dungeons with
+        // continental graveyards like BFD where OnPlayerReleasedGhost never
+        // runs the normal path).
+        if (instId)
+        {
+            PlayerbotAI* ai = GET_PLAYERBOT_AI(player);
+            if (ai && PlayerbotAI::IsTank(player))
+            {
+                bool const alreadyCounted = g_wipeCounted.count(instId) > 0;
+                if (!alreadyCounted)
+                {
+                    ++g_wipeCount[instId];
+                    g_wipeCounted.insert(instId);
+                }
+                uint32 const maxWipes = BotDungeonQueueConfig::MaxWipesBeforeEvict();
+                uint32 wipes = g_wipeCount[instId];
+                LOG_INFO("playerbots", "mod-bot-dungeon-queue: tank {} died in map {} — wipe {}/{}",
+                         player->GetName(), mapId, wipes, maxWipes);
+
+                // If the group used all its retries on this death, evict them
+                // immediately instead of waiting for a ghost release that may
+                // never reach OnPlayerReleasedGhost (BFD continental graveyard).
+                if (wipes >= maxWipes)
+                {
+                    LOG_INFO("playerbots", "mod-bot-dungeon-queue: max wipes ({}) reached on tank death for inst {} — evicting group",
+                             maxWipes, instId);
+                    g_wipeCount.erase(instId);
+                    g_wipeCounted.erase(instId);
+                    if (Group* g = player->GetGroup())
+                        TeleportGroupHome(g);
+                }
+            }
+        }
     }
 
     void OnPlayerReleasedGhost(Player* player) override
@@ -1185,89 +1410,115 @@ public:
         RandomPlayerbotMgr& mgr = sRandomPlayerbotMgr;
         if (!mgr.IsRandomBot(player))
             return;
+
+        // For most dungeons the ghost appears inside the instance (interior
+        // graveyard). But some — notably BFD (map 48) and any dungeon whose
+        // spirit healer sits on the continent — place the ghost on the world
+        // map. Use the death_map_id stashed at death time as a fallback so
+        // the ghost-handler still fires for those dungeons.
         Map* map = player->GetMap();
+        uint32 deathMapId = 0;
+        uint32 deathInstanceId = 0;
         if (!map || !map->IsDungeon())
-            return;
+        {
+            deathMapId = mgr.GetValue(player->GetGUID().GetCounter(), "death_map_id");
+            deathInstanceId = mgr.GetValue(player->GetGUID().GetCounter(), "death_instance_id");
+            if (!deathMapId || !deathInstanceId)
+                return;  // no stored death info — nothing we can do
+            // Build a fake map-like key for groupmate scanning below:
+            // the bot is a ghost on the continent but the rest of the party
+            // might still be alive inside the dungeon (partial wipe).
+        }
+
         Group* group = player->GetGroup();
         if (!BotDungeonQueueConfig::TeleportOutOnDeath() || !group)
             return;
 
-        InstanceMap* im = map->ToInstanceMap();
-        uint32 const instId = im ? im->GetInstanceId() : 0;
-        if (instId)
+        // Resolve the dungeon map/instance ID from either the ghost's current
+        // map (interior graveyard) or the stashed death values (continental
+        // graveyard like BFD).
+        uint32 const mapId = (map && map->IsDungeon()) ? map->GetId() : deathMapId;
+        uint32 const instId = [&]() -> uint32
         {
-            // Determine if this is a genuine full-party wipe. Only count
-            // full wipes against the retry limit — solo deaths (one bot
-            // dies while the rest of the party is alive) should teleport
-            // back and rejoin without consuming a retry.
-            bool fullPartyWipe = true;
-            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            if (map && map->IsDungeon())
+                if (InstanceMap* im = map->ToInstanceMap())
+                    return im->GetInstanceId();
+            return deathInstanceId;
+        }();
+        if (!instId)
+            return;
+
+        // Determine if this is a genuine full-party wipe. Only count
+        // full wipes against the retry limit — solo deaths (one bot
+        // dies while the rest of the party is alive) should teleport
+        // back and rejoin without consuming a retry.
+        bool fullPartyWipe = true;
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* mbr = ref->GetSource();
+            if (mbr && mbr != player && mbr->IsAlive() &&
+                mbr->GetMapId() == mapId)
             {
-                Player* mbr = ref->GetSource();
-                if (mbr && mbr != player && mbr->IsAlive() &&
-                    mbr->GetMapId() == player->GetMapId())
+                fullPartyWipe = false;
+                break;
+            }
+        }
+
+        uint32 const maxWipes = BotDungeonQueueConfig::MaxWipesBeforeEvict();
+        bool evict = false;
+
+        if (fullPartyWipe)
+        {
+            // Only count one wipe per death-cycle, not per bot release.
+            // In a full party wipe, 5 bots release nearly simultaneously
+            // — without this guard a single wipe consumes all 4 retries.
+            bool const alreadyCounted = g_wipeCounted.count(instId) > 0;
+            if (!alreadyCounted)
+            {
+                ++g_wipeCount[instId];
+                g_wipeCounted.insert(instId);
+            }
+
+            uint32 wipes = g_wipeCount[instId];
+            if (wipes >= maxWipes)
+                evict = true;
+        }
+
+        if (!evict)
+        {
+            // Step 1: force a far (inter-map) teleport by sending the ghost
+            // to homebind.  A same-map near teleport would stay on the
+            // overworld layer, not inside the instance, and the stock
+            // ReviveFromCorpseAction can't path through the instance
+            // portal — the ghost eventually gives up and spirit-healer-
+            // resurrects outside the dungeon with res sickness.
+            player->TeleportTo(player->m_homebindMapId,
+                               player->m_homebindX,
+                               player->m_homebindY,
+                               player->m_homebindZ, 0.0f);
+            LOG_INFO("playerbots", "mod-bot-dungeon-queue: {} released ghost in map {} ({}) — step 1: teleported home, queueing step 2",
+                     player->GetName(), mapId,
+                     fullPartyWipe
+                         ? std::to_string(g_wipeCount[instId]) + "/" + std::to_string(maxWipes) + " wipes"
+                         : "solo death, no wipe counted");
+            // Step 2 will fire on the next OnUpdate tick and teleport the
+            // ghost from homebind into the instance via far teleport.
+            for (auto const& dp : BotDungeonPorts)
+            {
+                if (dp.mapId == mapId)
                 {
-                    fullPartyWipe = false;
+                    g_pendingGhostTeleports[player->GetGUID()] = dp;
+                    sRandomPlayerbotMgr.SetValue(player->GetGUID().GetCounter(), "pending_teleport", 1);
                     break;
                 }
             }
-
-            uint32 const maxWipes = BotDungeonQueueConfig::MaxWipesBeforeEvict();
-            bool evict = false;
-
-            if (fullPartyWipe)
-            {
-                // Only count one wipe per death-cycle, not per bot release.
-                // In a full party wipe, 5 bots release nearly simultaneously
-                // — without this guard a single wipe consumes all 4 retries.
-                bool const alreadyCounted = g_wipeCounted.count(instId) > 0;
-                if (!alreadyCounted)
-                {
-                    ++g_wipeCount[instId];
-                    g_wipeCounted.insert(instId);
-                }
-
-                uint32 wipes = g_wipeCount[instId];
-                if (wipes >= maxWipes)
-                    evict = true;
-            }
-
-            if (!evict)
-            {
-                // Step 1: force a far (inter-map) teleport by sending the ghost
-                // to homebind.  A same-map near teleport would stay on the
-                // overworld layer, not inside the instance, and the stock
-                // ReviveFromCorpseAction can't path through the instance
-                // portal — the ghost eventually gives up and spirit-healer-
-                // resurrects outside the dungeon with res sickness.
-                player->TeleportTo(player->m_homebindMapId,
-                                   player->m_homebindX,
-                                   player->m_homebindY,
-                                   player->m_homebindZ, 0.0f);
-                LOG_INFO("playerbots", "mod-bot-dungeon-queue: {} released ghost in {} ({}) — step 1: teleported home, queueing step 2",
-                         player->GetName(), map->GetId(),
-                         fullPartyWipe
-                             ? std::to_string(g_wipeCount[instId]) + "/" + std::to_string(maxWipes) + " wipes"
-                             : "solo death, no wipe counted");
-                // Step 2 will fire on the next OnUpdate tick and teleport the
-                // ghost from homebind into the instance via far teleport.
-                for (auto const& dp : BotDungeonPorts)
-                {
-                    if (dp.mapId == map->GetId())
-                    {
-                        g_pendingGhostTeleports[player->GetGUID()] = dp;
-                    sRandomPlayerbotMgr.SetValue(player->GetGUID().GetCounter(), "pending_teleport", 1);
-                        break;
-                    }
-                }
-                return;
-            }
-
-            LOG_INFO("playerbots", "mod-bot-dungeon-queue: max wipes ({}) reached for inst {} — evicting group",
-                     maxWipes, instId);
-            g_wipeCount.erase(instId);
-            g_wipeCounted.erase(instId);
+            return;
         }
+
+        LOG_INFO("playerbots", "mod-bot-dungeon-queue: max wipes ({}) reached for inst {} — evicting group",
+                 maxWipes, instId);
+        g_wipeCount.erase(instId);
+        g_wipeCounted.erase(instId);
         TeleportGroupHome(group);
     }
 
@@ -1278,6 +1529,13 @@ public:
         if (!sRandomPlayerbotMgr.IsRandomBot(player))
             return;
         sRandomPlayerbotMgr.SetValue(player->GetGUID().GetCounter(), "death_time", 0);
+        sRandomPlayerbotMgr.SetValue(player->GetGUID().GetCounter(), "death_map_id", 0);
+        sRandomPlayerbotMgr.SetValue(player->GetGUID().GetCounter(), "death_instance_id", 0);
+        // Clear pending_teleport flag — the bot has been resurrected (either
+        // by spirit healer or player-cast). If it was a spirit healer rez, the
+        // respawn-back logic below will teleport the bot to the dungeon
+        // entrance if the group is still inside.
+        sRandomPlayerbotMgr.SetValue(player->GetGUID().GetCounter(), "pending_teleport", 0);
 
         Map* map = player->GetMap();
         if (map && map->IsDungeon())
@@ -1314,12 +1572,30 @@ public:
         // Spirit-healer rez outside a dungeon: if the bot's groupmates are
         // still inside, teleport the bot back to the dungeon entrance so it
         // can corpse-run and rejoin instead of wandering off alone.
+        // Also: count this as a wipe since the bot spirit-rezzed instead of
+        // corpse-running (the pending_teleport flag should have prevented
+        // this, but it's a fallback for race conditions).
         if (!applySickness)
             return;
 
         Group* group = player->GetGroup();
         if (!group)
             return;
+
+        // Count a wipe for this instance (spirit rez = failed recovery)
+        Map* playerMap = player->GetMap();
+        bool countedWipe = false;
+        if (InstanceMap* im_map = playerMap ? playerMap->ToInstanceMap() : nullptr)
+        {
+            uint32 const instId = im_map->GetInstanceId();
+            bool const alreadyCounted = g_wipeCounted.count(instId) > 0;
+            if (!alreadyCounted)
+            {
+                ++g_wipeCount[instId];
+                g_wipeCounted.insert(instId);
+            }
+            countedWipe = true;
+        }
 
         // Find a groupmate who is still inside a dungeon
         for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
@@ -1344,6 +1620,10 @@ public:
                 }
             }
         }
+
+        // No groupmate found in a dungeon (the whole group wiped outside).
+        // Re-enable DC anyway so the bot is ready when it re-enters.
+        EnableDungeonClear(player);
     }
 
 private:
