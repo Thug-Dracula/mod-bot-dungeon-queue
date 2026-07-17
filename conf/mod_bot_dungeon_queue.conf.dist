@@ -56,6 +56,15 @@ BotDungeonQueue.WhisperReplies = 1
 BotDungeonQueue.TeleportOutOnDeath = 1
 
 ###############################################################################
+# WIPE LIMITS
+###############################################################################
+
+# Maximum number of full-party wipes before the group is evicted from the
+# instance and disbanded. Solo deaths (where most of the party survives) do
+# not count toward this limit.
+BotDungeonQueue.MaxWipesBeforeEvict = 4
+
+###############################################################################
 # STUCK BOT CLEANUP
 ###############################################################################
 
