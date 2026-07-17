@@ -127,6 +127,33 @@ namespace
     // the previous heartbeat. If a follower hasn't moved for one full
     // heartbeat cycle while the tank is far away, teleport them to the tank.
     std::unordered_map<ObjectGuid, Position> g_lastPosition;
+    // Tracks when each bot first became Z-separated (or too far) from the tank.
+    // Key: bot GUID. Value: game time in seconds when separation was first detected.
+    // Cleared when the bot returns within safe range of the tank.
+    std::unordered_map<ObjectGuid, uint32> g_separationSince;
+}
+
+// Teleport a bot to a target position. If the bot doesn't arrive within
+// 5yd of the target (unwalkable spot, engine placed them elsewhere), fall
+// back to the dungeon entrance from BotDungeonPorts so the bot at least
+// gets into the right area instead of being stranded.
+static void TeleportToOrFallback(Player* bot, uint32 mapId, float x, float y, float z, float o)
+{
+    bot->TeleportTo(mapId, x, y, z, o);
+    // TeleportTo is synchronous for same-map; check if we arrived at target
+    if (bot->GetMapId() == mapId && bot->GetExactDist2d(Position(x, y, z)) > 5.0f)
+    {
+        for (auto const& dp : BotDungeonPorts)
+        {
+            if (dp.mapId == mapId)
+            {
+                LOG_INFO("playerbots", "mod-bot-dungeon-queue: {} teleport to ({:.0f},{:.0f},{:.0f}) missed — falling back to dungeon entrance",
+                         bot->GetName(), x, y, z);
+                bot->TeleportTo(dp.mapId, dp.x, dp.y, dp.z, dp.o);
+                break;
+            }
+        }
+    }
 }
 
 // Apply permanent Water Breathing to a bot. The breath timer (getMaxTimer)
@@ -252,9 +279,20 @@ static void TeleportGroupHome(Group* group)
         if (!m || !m->IsInWorld() || m->IsBeingTeleported())
             continue;
         sLFGMgr->LeaveLfg(m->GetGUID());
+        // Disable DC and remove dungeon strategies so the bot reverts to
+        // normal random-bot behavior (wandering, questing, etc.) instead of
+        // standing at homebind with DC still enabled.
+        if (PlayerbotAI* ai = GET_PLAYERBOT_AI(m))
+        {
+            DcRunState& rs = DcRun::Of(ai->GetAiObjectContext());
+            rs.Reset();  // sets enabled=false, clears pause/latch state
+            if (ai->HasStrategy("dungeon clear", BOT_STATE_NON_COMBAT))
+                ai->ChangeStrategy("-dungeon clear", BOT_STATE_NON_COMBAT);
+            if (ai->HasStrategy("dungeon clear combat", BOT_STATE_COMBAT))
+                ai->ChangeStrategy("-dungeon clear combat", BOT_STATE_COMBAT);
+        }
         m->TeleportTo(m->m_homebindMapId, m->m_homebindX, m->m_homebindY, m->m_homebindZ, 0.0f);
     }
-    // Disband so evicted bots become eligible for re-queuing
     group->Disband();
 }
 
@@ -351,11 +389,31 @@ public:
                  it != sRandomPlayerbotMgr.GetPlayerBotsEnd(); ++it)
             {
                 Player* bot = it->second;
-                if (bot && bot->IsInWorld() && bot->GetMap() && bot->GetMap()->IsDungeon())
+                if (!bot || !bot->IsInWorld())
+                    continue;
+
+                // Teleport living bots out of stale dungeons
+                if (bot->GetMap() && bot->GetMap()->IsDungeon())
                 {
                     LOG_INFO("playerbots", "mod-bot-dungeon-queue: delayed cleanup teleporting {} home from stale map {}",
                              bot->GetName(), bot->GetMapId());
                     bot->TeleportTo(bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ, bot->GetOrientation());
+                }
+
+                // Crash-resilient ghost recovery: if a bot is a ghost with
+                // pending_teleport set, the in-memory ghost teleport queue
+                // (g_pendingGhostTeleports) was lost on restart. Clear the
+                // flag so the bot can accept spirit healer rez and revive
+                // instead of being stuck as a ghost permanently.
+                uint32 const pt = sRandomPlayerbotMgr.GetValue(bot->GetGUID().GetCounter(), "pending_teleport");
+                if (pt && bot->HasPlayerFlag(PLAYER_FLAGS_GHOST))
+                {
+                    LOG_INFO("playerbots", "mod-bot-dungeon-queue: ghost recovery — clearing pending_teleport for {} (stale in-memory queue)",
+                             bot->GetName());
+                    sRandomPlayerbotMgr.SetValue(bot->GetGUID().GetCounter(), "pending_teleport", 0);
+                    sRandomPlayerbotMgr.SetValue(bot->GetGUID().GetCounter(), "death_time", 0);
+                    sRandomPlayerbotMgr.SetValue(bot->GetGUID().GetCounter(), "death_map_id", 0);
+                    sRandomPlayerbotMgr.SetValue(bot->GetGUID().GetCounter(), "death_instance_id", 0);
                 }
             }
         }
@@ -459,37 +517,42 @@ public:
                          dcEnabled ? 1 : 0, dcPaused ? 1 : 0, isLeader ? 1 : 0);
             }
 
-            // Stranding detection: if a follower hasn't moved since the last
-            // heartbeat while the tank is far away, teleport them to the tank
-            // (typical cause: navmesh gap between dungeon levels).
-            if (!isLeader && ai && !bot->IsInCombat())
+            // Z-separation / distance party-merge: if any party member is too
+            // far from the tank (Z-diff > 8yd or 2D > 80yd) for more than 30
+            // seconds, teleport them to the tank. This catches navmesh level
+            // gaps (Stockade ramps, BFD upper/lower) where pathfinding fails
+            // but a direct teleport restores the party instantly.
+            if (Group* grp = bot->GetGroup())
             {
-                auto prev = g_lastPosition.find(bot->GetGUID());
-                if (prev != g_lastPosition.end())
+                Player* tank = DcLeaderSignal::FindLeaderTank(bot);
+                if (tank && tank != bot)
                 {
-                    float const dx = bot->GetPositionX() - prev->second.GetPositionX();
-                    float const dy = bot->GetPositionY() - prev->second.GetPositionY();
-                    float const dz = bot->GetPositionZ() - prev->second.GetPositionZ();
-                    bool const moved = (dx*dx + dy*dy + dz*dz) > 1.0f;
-                    if (!moved)
+                    float const dz = std::fabs(bot->GetPositionZ() - tank->GetPositionZ());
+                    float const d2 = bot->GetExactDist2d(tank);
+                    bool const separated = dz > 8.0f || d2 > 80.0f;
+
+                    uint32 const now = static_cast<uint32>(GameTime::GetGameTime().count());
+                    auto& sepSince = g_separationSince[bot->GetGUID()];
+
+                    if (separated)
                     {
-                        Player* tank = DcLeaderSignal::FindLeaderTank(bot);
-                        if (tank && tank->IsInWorld() && tank->GetMapId() == bot->GetMapId())
+                        if (!sepSince)
+                            sepSince = now;
+                        else if (now - sepSince >= 30u && !bot->IsInCombat())
                         {
-                            float const dist = bot->GetExactDist2d(tank);
-                            if (dist > 40.0f)
-                            {
-                                LOG_INFO("playerbots", "mod-bot-dungeon-queue: {} stranded {:.0f}yd from tank {} at ({:.1f}, {:.1f}, {:.1f}) — teleporting to tank",
-                                         bot->GetName(), dist, tank->GetName(),
-                                         tank->GetPositionX(), tank->GetPositionY(),
-                                         tank->GetPositionZ());
-                                bot->TeleportTo(bot->GetMapId(),
-                                                tank->GetPositionX(),
-                                                tank->GetPositionY(),
-                                                tank->GetPositionZ(),
-                                                tank->GetOrientation());
-                            }
+                            LOG_INFO("playerbots", "mod-bot-dungeon-queue: {} separated {:.0f}yd Z-diff={:.0f} from tank {} for >30s — teleporting to tank",
+                                     bot->GetName(), d2, dz, tank->GetName());
+                            TeleportToOrFallback(bot, tank->GetMapId(),
+                                                 tank->GetPositionX(),
+                                                 tank->GetPositionY(),
+                                                 tank->GetPositionZ(),
+                                                 tank->GetOrientation());
+                            sepSince = 0;
                         }
+                    }
+                    else
+                    {
+                        sepSince = 0;
                     }
                 }
             }
