@@ -1319,22 +1319,32 @@ private:
                     // has been in the dungeon for > 2× grace with zero boss
                     // kills, it's truly stuck (e.g. BFD no navmesh).  Evict
                     // so accounts can re-queue for a working dungeon.
-                    bool const idleStuck =
-                        getMSTimeDiff(entryIt->second, nowMs) > graceMs * 2 &&
-                        [&]() -> bool {
-                            InstanceMap* im = map->ToInstanceMap();
-                            if (!im) return false;
-                            InstanceScript* script = im->GetInstanceScript();
-                            if (!script) return false;
-                            InstanceSave* save = sInstanceSaveMgr->GetInstanceSave(im->GetInstanceId());
-                            return !save || save->GetCompletedEncounterMask() == 0;
-                        }();
-                    if (idleStuck)
-                        LOG_INFO("playerbots", "mod-bot-dungeon-queue: stuck cleanup evicting {} from map {} (idle {:.0f}s, 0 bosses killed)",
-                                 bot->GetName(), bot->GetMapId(),
-                                 getMSTimeDiff(entryIt->second, nowMs) / 1000.0f);
-                    if (!idleStuck)
-                        continue;
+                    // Must have a valid entry timestamp first — if the entry
+                    // was cleaned up by the sweep above, we can't measure
+                    // idle duration and skip the stuck check.
+                    if (entryIt != g_dungeonEntryTimeMs.end())
+                    {
+                        bool const idleStuck =
+                            getMSTimeDiff(entryIt->second, nowMs) > graceMs * 2 &&
+                            [&]() -> bool {
+                                InstanceMap* im = map->ToInstanceMap();
+                                if (!im) return false;
+                                InstanceScript* script = im->GetInstanceScript();
+                                if (!script) return false;
+                                InstanceSave* save = sInstanceSaveMgr->GetInstanceSave(im->GetInstanceId());
+                                return !save || save->GetCompletedEncounterMask() == 0;
+                            }();
+                        if (idleStuck)
+                            LOG_INFO("playerbots", "mod-bot-dungeon-queue: stuck cleanup evicting {} from map {} (idle {:.0f}s, 0 bosses killed)",
+                                     bot->GetName(), bot->GetMapId(),
+                                     getMSTimeDiff(entryIt->second, nowMs) / 1000.0f);
+                        if (idleStuck)
+                        {
+                            // Fall through to eviction below
+                        }
+                        else
+                            continue;
+                    }
                 }
             }
 
