@@ -161,11 +161,11 @@ Bot pathfinding in dungeons depends on navigation mesh (navmesh) data — files 
 
 **If you're using this module for the first time:**
 
-1. You need a **full, genuine WoW 3.3.5a (Patch 3.3.5, build 12340)** installation on the machine running the server.
+1. You need a **full, genuine WoW 3.3.5a (Patch 3.3.5, build 12340)** installation on the machine running the server or accessible via Docker volume mounts.
 2. Run `mapextractor`, `vmap4assembler`, and `mmaps_generator` from your core build. The resulting `.mmap`/`.mmtile` files go into `env/dist/data/mmaps/`.
 3. Dungeons with missing or incomplete navmeshes will cause bots to stand still. If a particular dungeon doesn't work, check whether its navmesh tiles exist.
 
-We extracted our navmeshes from a ChromieCraft client. Most dungeons have full navmesh now (after regeneration from client MPQs). The ChromieCraft Docker image was missing tiles for Stockade, RFC, BFD, and others — these were regenerated successfully. Stratholme (201) has no vmap data at all and relies on DungeonSpawnGraph fallback.
+We extracted our navmeshes from a full 3.3.5a (build 12340) client. Most dungeons have full navmesh. Stratholme (201) has no vmap data at all and relies on DungeonSpawnGraph fallback.
 
 ---
 
