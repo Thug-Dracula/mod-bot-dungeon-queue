@@ -21,6 +21,11 @@ BotDungeonQueue.Enable = 1
 # dungeon groups. Lower = more responsive but higher CPU.
 BotDungeonQueue.QueueInterval = 30
 
+# When enabled, the role pools (tank/healer/dps) are shuffled before forming
+# groups so the same bots aren't always picked in the same order. Disable for
+# deterministic debugging when you need consistent group composition.
+BotDungeonQueue.ShufflePool = 1
+
 # Minimum level a bot must be to join a dungeon group. Default 15 (RFC).
 BotDungeonQueue.MinLevel = 15
 

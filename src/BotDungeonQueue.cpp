@@ -8,6 +8,9 @@
 #include "Group.h"
 #include "InstanceSaveMgr.h"
 #include "LFG.h"
+
+#include <algorithm>
+#include <random>
 #include "LFGMgr.h"
 #include "Map.h"
 #include "MapMgr.h"
@@ -214,6 +217,7 @@ namespace BotDungeonQueueConfig
     uint32 MaxBotsPct() { return sConfigMgr->GetOption<uint32>("BotDungeonQueue.MaxBotsPct", 50); }
     bool RespectBgQueue() { return sConfigMgr->GetOption<bool>("BotDungeonQueue.RespectBgQueue", true); }
     bool WhisperReplies() { return sConfigMgr->GetOption<bool>("BotDungeonQueue.WhisperReplies", true); }
+    bool ShufflePool() { return sConfigMgr->GetOption<bool>("BotDungeonQueue.ShufflePool", true); }
     bool TeleportOutOnDeath() { return sConfigMgr->GetOption<bool>("BotDungeonQueue.TeleportOutOnDeath", true); }
     uint32 MaxWipesBeforeEvict() { return sConfigMgr->GetOption<uint32>("BotDungeonQueue.MaxWipesBeforeEvict", 4); }
     uint32 StuckCleanupInterval() { return sConfigMgr->GetOption<uint32>("BotDungeonQueue.StuckCleanupInterval", 300); }
@@ -1147,6 +1151,17 @@ private:
 
                 while (tanks.size() >= 1 && healers.size() >= 1 && dps.size() >= 3)
                 {
+                    // Shuffle each role pool so the same bots aren't always picked
+                    // from the back of the vector. Skip when disabled via config for
+                    // deterministic debugging.
+                    if (BotDungeonQueueConfig::ShufflePool())
+                    {
+                        static thread_local std::default_random_engine rng(std::random_device{}());
+                        std::shuffle(tanks.begin(), tanks.end(), rng);
+                        std::shuffle(healers.begin(), healers.end(), rng);
+                        std::shuffle(dps.begin(), dps.end(), rng);
+                    }
+
                     Player* tank = tanks.back(); tanks.pop_back();
                     Player* healer = healers.back(); healers.pop_back();
                     std::vector<Player*> groupDps;
