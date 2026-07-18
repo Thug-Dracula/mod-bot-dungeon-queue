@@ -21,6 +21,12 @@ BotDungeonQueue.Enable = 1
 # dungeon groups. Lower = more responsive but higher CPU.
 BotDungeonQueue.QueueInterval = 30
 
+# Minimum time (in seconds) between new dungeon groups. Throttles group
+# formation so dungeons pop gradually instead of all at once. Set to 0 for
+# no throttle (every queue tick may form groups if bots are available).
+# Suggested values: 60 (1 min), 300 (5 min), 900 (15 min), 1200 (20 min).
+BotDungeonQueue.GroupInterval = 60
+
 # When enabled, the role pools (tank/healer/dps) are shuffled before forming
 # groups so the same bots aren't always picked in the same order. Disable for
 # deterministic debugging when you need consistent group composition.
@@ -30,7 +36,7 @@ BotDungeonQueue.ShufflePool = 1
 BotDungeonQueue.MinLevel = 15
 
 # Maximum percentage of online bots that can be inside dungeons at any time.
-# 0 = unlimited (no cap).
+# 0 = unlimited (no cap). Suggested values: 10, 20, 30, 40.
 BotDungeonQueue.MaxBotsPct = 50
 
 ###############################################################################

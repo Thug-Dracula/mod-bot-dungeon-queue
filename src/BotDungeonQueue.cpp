@@ -213,6 +213,7 @@ namespace BotDungeonQueueConfig
 {
     bool Enable() { return sConfigMgr->GetOption<bool>("BotDungeonQueue.Enable", true); }
     uint32 QueueInterval() { return sConfigMgr->GetOption<uint32>("BotDungeonQueue.QueueInterval", 30); }
+    uint32 GroupInterval() { return sConfigMgr->GetOption<uint32>("BotDungeonQueue.GroupInterval", 60); }
     uint32 MinLevel() { return sConfigMgr->GetOption<uint32>("BotDungeonQueue.MinLevel", 15); }
     uint32 MaxBotsPct() { return sConfigMgr->GetOption<uint32>("BotDungeonQueue.MaxBotsPct", 50); }
     bool RespectBgQueue() { return sConfigMgr->GetOption<bool>("BotDungeonQueue.RespectBgQueue", true); }
@@ -1079,6 +1080,7 @@ private:
     uint32 m_cleanupTimer = 0;
     uint32 m_skullSyncTimer = 0;
     uint32 m_heartbeatTimer = 0;
+    uint32 m_lastGroupFormedTime = 0;
     bool m_startupCleanupDone = false;
     bool m_delayedCleanupDone = false;
     bool m_staleGroupCleanupDone = false;
@@ -1118,6 +1120,14 @@ private:
             if (inDungeon >= maxDungeon)
                 return;
         }
+
+        // Group-interval throttle: only form at most one new group per interval,
+        // so dungeons trickle out over time instead of batching up all at once.
+        uint32 const now = static_cast<uint32>(GameTime::GetGameTime().count());
+        uint32 const groupInterval = BotDungeonQueueConfig::GroupInterval();
+        if (groupInterval > 0 && m_lastGroupFormedTime > 0 &&
+            (now - m_lastGroupFormedTime) < groupInterval)
+            return;
 
         std::map<TeamId, std::map<uint8, std::vector<Player*>>> botsByBracket;
 
@@ -1301,6 +1311,8 @@ private:
 
                     LOG_INFO("playerbots", "mod-bot-dungeon-queue: teleported group '{}' to map {} (levels {}-{})",
                              tank->GetName(), selected->mapId, minLvl, maxLvl);
+
+                    m_lastGroupFormedTime = static_cast<uint32>(GameTime::GetGameTime().count());
 
                     // Enable DC for all members; only the tank gets the tank strategy
                     for (Player* m : {tank, healer, groupDps[0], groupDps[1], groupDps[2]})
