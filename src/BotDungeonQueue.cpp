@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <random>
+#include <unordered_set>
 #include "LFGMgr.h"
 #include "Map.h"
 #include "MapMgr.h"
@@ -216,6 +217,7 @@ namespace BotDungeonQueueConfig
     uint32 GroupInterval() { return sConfigMgr->GetOption<uint32>("BotDungeonQueue.GroupInterval", 60); }
     uint32 MinLevel() { return sConfigMgr->GetOption<uint32>("BotDungeonQueue.MinLevel", 15); }
     uint32 MaxBotsPct() { return sConfigMgr->GetOption<uint32>("BotDungeonQueue.MaxBotsPct", 50); }
+    uint32 MaxActiveDungeons() { return sConfigMgr->GetOption<uint32>("BotDungeonQueue.MaxActiveDungeons", 0); }
     bool RespectBgQueue() { return sConfigMgr->GetOption<bool>("BotDungeonQueue.RespectBgQueue", true); }
     bool WhisperReplies() { return sConfigMgr->GetOption<bool>("BotDungeonQueue.WhisperReplies", true); }
     bool ShufflePool() { return sConfigMgr->GetOption<bool>("BotDungeonQueue.ShufflePool", true); }
@@ -1118,6 +1120,28 @@ private:
         {
             uint32 maxDungeon = (totalOnline * maxPct) / 100;
             if (inDungeon >= maxDungeon)
+                return;
+        }
+
+        // Max-active-dungeons cap: count distinct active instance groups and
+        // stop forming new ones beyond the limit. This caps the number of
+        // concurrent dungeon groups regardless of how many bots are inside.
+        uint32 const maxActive = BotDungeonQueueConfig::MaxActiveDungeons();
+        if (maxActive > 0)
+        {
+            std::unordered_set<uint32> activeInsts;
+            for (auto it = mgr.GetPlayerBotsBegin(); it != mgr.GetPlayerBotsEnd(); ++it)
+            {
+                Player* bot = it->second;
+                if (!bot || !bot->IsInWorld())
+                    continue;
+                Map* m = bot->GetMap();
+                if (!m || !m->IsDungeon())
+                    continue;
+                if (InstanceMap* im = m->ToInstanceMap())
+                    activeInsts.insert(im->GetInstanceId());
+            }
+            if (activeInsts.size() >= maxActive)
                 return;
         }
 

@@ -39,6 +39,12 @@ BotDungeonQueue.MinLevel = 15
 # 0 = unlimited (no cap). Suggested values: 10, 20, 30, 40.
 BotDungeonQueue.MaxBotsPct = 50
 
+# Maximum number of active dungeon groups (instances) at any time.
+# 0 = unlimited (no cap). When set, limits the total concurrent dungeon
+# instances regardless of how many bots are inside. Useful paired with
+# MaxBotsPct when you want both a bot-count cap and a group-count cap.
+BotDungeonQueue.MaxActiveDungeons = 0
+
 ###############################################################################
 # BG COMPATIBILITY
 ###############################################################################
