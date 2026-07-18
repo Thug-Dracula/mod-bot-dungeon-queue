@@ -899,9 +899,11 @@ public:
             } // end else (no tank)
 
         do_evict:
-            // Tank dead/missing, no res available — evict the whole group
-            // and count this as a wipe (the group effectively wiped even if
-            // some members are still alive — they can't continue without a tank).
+            // Tank dead/missing, no res available — count a wipe. On earlier
+            // wipes let the ghosts corpse-run back (the step-2 teleport dumps
+            // them at the dungeon entrance, pending_teleport is cleared, and
+            // they can res at the spirit healer to regroup). Only evict home
+            // when max wipes is exhausted.
             uint32 const maxWipes = BotDungeonQueueConfig::MaxWipesBeforeEvict();
             if (InstanceMap* im_map = m->ToInstanceMap())
             {
@@ -922,9 +924,9 @@ public:
                              maxWipes, instId);
                     g_wipeCount.erase(instId);
                     g_wipeCounted.erase(instId);
+                    TeleportGroupHome(g);
                 }
             }
-            TeleportGroupHome(g);
         }
 
         // Dungeon-complete sweep: teleport group home when all bosses are dead
