@@ -189,32 +189,25 @@ std::vector<DungeonPort> const BotDungeonPorts = {
     {19, 40,  48, -151.89f,    106.96f,   -39.87f,   4.53f},    // Blackfathom Deeps
     {15, 25, 389,    3.81f,     -14.82f,   -17.84f,   4.39f},    // Ragefire Chasm
     {24, 45,  90, -332.22f,     -2.28f,   -150.86f,   2.77f},    // Gnomeregan
-    {26, 50, 189, 855.683f,   1321.5f,     18.6709f, 0.001747f}, // Scarlet Monastery
+    {37, 50, 189, 855.683f,   1321.5f,     18.6709f, 0.001747f}, // Scarlet Monastery (Cathedral 37+)
     {37, 55, 129, 2592.55f,   1107.5f,     51.29f,   4.74f},    // Razorfen Downs
-    {28, 55,  70, -226.8f,     49.09f,    -46.03f,   1.39f},    // Uldaman
+    // {28, 55,  70, -226.8f,     49.09f,    -46.03f,   1.39f},    // Uldaman — disabled for testing
     {29, 60, 209, 1213.52f,   841.59f,      8.93f,   6.09f},    // Zul'Farrak
     {30, 55, 349,  752.91f,   -616.53f,   -33.11f,   1.37f},    // Maraudon
     {31, 55, 109, -319.24f,     99.9f,    -131.85f,   3.19f},    // Sunken Temple
-    {40, 60, 230, 456.929f,    34.0923f,   -68.0896f, 4.71239f}, // Blackrock Depths
-    {40, 60, 229,   78.5083f, -225.044f,    49.839f,  5.1f},    // Blackrock Spire
-    {45, 60, 329, 3593.15f,  -3646.56f,    138.5f,   5.33f},    // Stratholme
-    {40, 60, 289,  196.37f,    127.05f,    134.91f,  6.09f},    // Scholomance
+    // {40, 60, 230, 456.929f,    34.0923f,   -68.0896f, 4.71239f}, // Blackrock Depths — disabled for testing
+    // {40, 60, 229,   78.5083f, -225.044f,    49.839f,  5.1f},    // Blackrock Spire — disabled for testing
+    // {45, 60, 329, 3593.15f,  -3646.56f,    138.5f,   5.33f},    // Stratholme — disabled for testing
+    // {40, 60, 289,  196.37f,    127.05f,    134.91f,  6.09f},    // Scholomance — disabled for testing
     {40, 60, 429,   31.5609f,  159.45f,     -3.4777f, 0.01f},   // Dire Maul
 
-    // ─── TBC 60-70 dungeons ────────────────────────────────────────────
-    {60, 62, 543, -1355.24f,  1641.12f,     68.2491f, 0.6687f}, // Hellfire Ramparts
-    {60, 62, 542,   -3.9967f,  14.6363f,   -44.8009f, 4.88748f},// The Blood Furnace
-    {62, 64, 547,  120.101f, -131.957f,     -0.801547f, 1.47574f},// The Slave Pens
-    {63, 65, 546,    9.71391f, -16.2008f,   -2.75334f, 5.57082f},// The Underbog
-    {66, 68, 560, 2741.87f,   1315.25f,     14.0423f, 2.96016f}, // Old Hillsbrad Foothills
-    {70, 70, 554,  -28.906f,    0.680314f,  -1.81282f, 0.0345509f},// The Mechanar
 };
 
 namespace BotDungeonQueueConfig
 {
     bool Enable() { return sConfigMgr->GetOption<bool>("BotDungeonQueue.Enable", true); }
     uint32 QueueInterval() { return sConfigMgr->GetOption<uint32>("BotDungeonQueue.QueueInterval", 30); }
-    uint32 GroupInterval() { return sConfigMgr->GetOption<uint32>("BotDungeonQueue.GroupInterval", 60); }
+    uint32 GroupInterval() { return sConfigMgr->GetOption<uint32>("BotDungeonQueue.GroupInterval", 15); }
     uint32 MinLevel() { return sConfigMgr->GetOption<uint32>("BotDungeonQueue.MinLevel", 15); }
     uint32 MaxBotsPct() { return sConfigMgr->GetOption<uint32>("BotDungeonQueue.MaxBotsPct", 50); }
     uint32 MaxActiveDungeons() { return sConfigMgr->GetOption<uint32>("BotDungeonQueue.MaxActiveDungeons", 0); }
@@ -298,7 +291,14 @@ static void TeleportGroupHome(Group* group)
             if (ai->HasStrategy("dungeon clear combat", BOT_STATE_COMBAT))
                 ai->ChangeStrategy("-dungeon clear combat", BOT_STATE_COMBAT);
         }
-        m->TeleportTo(m->m_homebindMapId, m->m_homebindX, m->m_homebindY, m->m_homebindZ, 0.0f);
+        // Force-stop combat so TeleportTo doesn't silently fail
+        if (m->IsInCombat())
+        {
+            m->CombatStop();
+            m->GetThreatMgr().RemoveMeFromThreatLists();
+        }
+        if (!m->TeleportTo(m->m_homebindMapId, m->m_homebindX, m->m_homebindY, m->m_homebindZ, 0.0f))
+            LOG_INFO("playerbots", "mod-bot-dungeon-queue: TeleportTo FAILED for {}", m->GetName());
     }
     group->Disband();
 }
@@ -358,11 +358,29 @@ class BotDungeonQueueWorldScript : public WorldScript
 public:
     BotDungeonQueueWorldScript() : WorldScript("BotDungeonQueueWorldScript") { }
 
-    void OnStartup() override
+     void OnStartup() override
     {
         if (!BotDungeonQueueConfig::Enable())
             return;
         CombatMonitor::Init();
+
+        // Evict bots from temporarily disabled dungeon maps
+        static uint32 const evictMaps[] = {70, 229, 230, 289, 329};
+        RandomPlayerbotMgr& mgr = sRandomPlayerbotMgr;
+        for (auto it = mgr.GetPlayerBotsBegin(); it != mgr.GetPlayerBotsEnd(); ++it)
+        {
+            Player* bot = it->second;
+            if (!bot || !bot->IsInWorld()) continue;
+            for (uint32 m : evictMaps)
+            {
+                if (bot->GetMapId() == m && bot->GetGroup())
+                {
+                    TeleportGroupHome(bot->GetGroup());
+                    break;
+                }
+            }
+        }
+
         LOG_INFO("playerbots", "mod-bot-dungeon-queue: enabled (queue every {}s, cleanup every {}s)",
                  BotDungeonQueueConfig::QueueInterval(),
                  BotDungeonQueueConfig::StuckCleanupInterval());
@@ -922,16 +940,20 @@ public:
                     g_wipeCounted.insert(instId);
                 }
                 uint32 wipes = g_wipeCount[instId];
-                LOG_INFO("playerbots", "mod-bot-dungeon-queue: orphaned survivor {} in map {} (no tank, no res) — wipe {}/{}",
-                         bot->GetName(), m->GetId(), wipes, maxWipes);
 
-                if (wipes >= maxWipes)
+                if (!alreadyCounted)
                 {
-                    LOG_INFO("playerbots", "mod-bot-dungeon-queue: max wipes ({}) reached for inst {} — evicting group",
-                             maxWipes, instId);
-                    g_wipeCount.erase(instId);
-                    g_wipeCounted.erase(instId);
-                    TeleportGroupHome(g);
+                    LOG_INFO("playerbots", "mod-bot-dungeon-queue: orphaned survivor {} in map {} (no tank, no res) — wipe {}/{}",
+                             bot->GetName(), m->GetId(), wipes, maxWipes);
+
+                    if (wipes >= maxWipes)
+                    {
+                        LOG_INFO("playerbots", "mod-bot-dungeon-queue: max wipes ({}) reached for inst {} — evicting group",
+                                 maxWipes, instId);
+                        g_wipeCount.erase(instId);
+                        g_wipeCounted.erase(instId);
+                        TeleportGroupHome(g);
+                    }
                 }
             }
         }
@@ -960,8 +982,6 @@ public:
                 continue;
 
             uint32 const mask = save->GetCompletedEncounterMask();
-            if (!mask)
-                continue; // no boss has been killed yet
 
             // Build the "all bits set" mask from actual DBC encounter indices.
             // Indices are NOT contiguous starting at 0 — they match DungeonEncounter.dbc.
@@ -971,11 +991,34 @@ public:
                     if (enc->mapId == m->GetId())
                         allBits |= (1u << enc->encounterIndex);
 
-            if (!allBits)
-                continue;
+            bool complete = false;
 
-            if ((mask & allBits) != allBits)
-                continue; // some bosses still alive
+            if (allBits > 0)
+            {
+                // DBC-based completion: mask must have all DBC encounter bits set.
+                if (!mask)
+                    continue;
+                if ((mask & allBits) != allBits)
+                    continue;
+                complete = true;
+            }
+            else
+            {
+                // Fallback for maps without DBC encounter entries (all vanilla
+                // dungeons). Check if DungeonClear has signaled run completion
+                // via the RandomPlayerbotMgr value system.
+                uint32 const dcComplete =
+                    sRandomPlayerbotMgr.GetValue(bot->GetGUID().GetCounter(), "dc_run_complete");
+                if (dcComplete > 0 && getMSTimeDiff(dcComplete, getMSTime()) < 300000u)
+                {
+                    // Clear the flag so we only evict once per run
+                    sRandomPlayerbotMgr.SetValue(bot->GetGUID().GetCounter(), "dc_run_complete", 0);
+                    complete = true;
+                }
+            }
+
+            if (!complete)
+                continue;
 
             LOG_INFO("playerbots", "mod-bot-dungeon-queue: dungeon {} complete for {} (mask {:08x} all {:08x}), teleporting group home",
                      m->GetId(), bot->GetName(), mask, allBits);
@@ -1017,39 +1060,6 @@ public:
                 bot->TeleportTo(bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ, 0.0f);
         }
 
-        // Deferred follower teleports (m_pendingFollows from RunQueueCheck).
-        // One tick after the tank, its map entry completed, so followers'
-        // step 1 perm bind resolves to the shared instance.
-        if (!m_pendingFollows.empty())
-        {
-            auto follows = std::move(m_pendingFollows);
-            for (auto& pt : follows)
-            {
-                LOG_INFO("playerbots", "mod-bot-dungeon-queue: deferred teleport for {} followers to map {}",
-                         pt.members.size(), pt.mapId);
-                for (Player* m : pt.members)
-                {
-                    if (!m)
-                    {
-                        LOG_INFO("playerbots", "  null player, skipping");
-                        continue;
-                    }
-                    if (!m->IsInWorld())
-                    {
-                        LOG_INFO("playerbots", "  {} NOT in world, skipping", m->GetName());
-                        continue;
-                    }
-                    Difficulty diff = m->GetDifficulty(sMapStore.LookupEntry(pt.mapId)->IsRaid());
-                    auto* selfBind = sInstanceSaveMgr->PlayerGetBoundInstance(m->GetGUID(), pt.mapId, diff);
-                    LOG_INFO("playerbots", "  {} teleporting map {} diff {} selfBind={} perm={}",
-                             m->GetName(), pt.mapId, diff,
-                             selfBind ? std::to_string(selfBind->save->GetInstanceId()).c_str() : "NULL",
-                             selfBind ? selfBind->perm : false);
-                    m->TeleportTo(pt.mapId, pt.x, pt.y, pt.z, pt.o);
-                }
-            }
-        }
-
         // Step 2 ghost teleports: one tick after the homebind far teleport
         // (step 1 in OnPlayerReleasedGhost), the ghost's map transition has
         // completed, so a teleport back to the dungeon entrance is a far
@@ -1086,14 +1096,6 @@ private:
     bool m_startupCleanupDone = false;
     bool m_delayedCleanupDone = false;
     bool m_staleGroupCleanupDone = false;
-
-    struct PendingTeleport
-    {
-        std::vector<Player*> members;
-        uint32 mapId;
-        float x, y, z, o;
-    };
-    std::vector<PendingTeleport> m_pendingFollows;
 
     void RunQueueCheck()
     {
@@ -1154,16 +1156,21 @@ private:
             return;
 
         std::map<TeamId, std::map<uint8, std::vector<Player*>>> botsByBracket;
+        uint32 eligible = 0, total = 0;
 
         for (auto it = mgr.GetPlayerBotsBegin(); it != mgr.GetPlayerBotsEnd(); ++it)
         {
             Player* bot = it->second;
+            ++total;
             if (!IsBotEligible(bot))
                 continue;
+            ++eligible;
             TeamId team = bot->GetTeamId();
             uint8 bracket = (bot->GetLevel() / 5) * 5;
             botsByBracket[team][bracket].push_back(bot);
         }
+
+        LOG_INFO("playerbots", "mod-bot-dungeon-queue: eligible {}/{} bots", eligible, total);
 
         for (auto& [team, bracketMap] : botsByBracket)
         {
@@ -1310,10 +1317,10 @@ private:
                         sLFGMgr->LeaveLfg(m->GetGUID());
                     }
 
-                    // Teleport the tank first (creates the instance map).
-                    // Followers are deferred to the next tick so the tank's
-                    // map entry (and perm→temp downgrade in AddPlayerToMap)
-                    // completes before they resolve their own perm bind.
+                    // Teleport all 5 members same-tick. The tank goes first to
+                    // create the instance map object, then followers join
+                    // immediately — TeleportTo is synchronous per-bot, so the
+                    // map and bind state are settled before the next call.
                     if (!tank->TeleportTo(selected->mapId, selected->x, selected->y, selected->z, selected->o))
                     {
                         LOG_INFO("playerbots", "mod-bot-dungeon-queue: teleport failed for tank {}, disbanding",
@@ -1323,15 +1330,11 @@ private:
                     }
 
                     g_dungeonEntryTimeMs[tank->GetGUID()] = getMSTime();
-                    g_dungeonEntryTimeMs[healer->GetGUID()] = getMSTime();
-                    for (Player* d2 : groupDps)
-                        g_dungeonEntryTimeMs[d2->GetGUID()] = getMSTime();
-
-                    // Defer followers to the next world tick
-                    m_pendingFollows.push_back({
-                        {healer, groupDps[0], groupDps[1], groupDps[2]},
-                        selected->mapId, selected->x, selected->y, selected->z, selected->o
-                    });
+                    for (Player* m : {healer, groupDps[0], groupDps[1], groupDps[2]})
+                    {
+                        m->TeleportTo(selected->mapId, selected->x, selected->y, selected->z, selected->o);
+                        g_dungeonEntryTimeMs[m->GetGUID()] = getMSTime();
+                    }
 
                     LOG_INFO("playerbots", "mod-bot-dungeon-queue: teleported group '{}' to map {} (levels {}-{})",
                              tank->GetName(), selected->mapId, minLvl, maxLvl);
