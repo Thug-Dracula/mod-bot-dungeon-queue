@@ -180,27 +180,13 @@ static void ApplyPermanentWaterBreathing(Player* player)
 constexpr uint32 RES_HOLD_TIMEOUT_SECS = 30u;
 
 std::vector<DungeonPort> const BotDungeonPorts = {
-    // ─── Classic 1-60 dungeons ──────────────────────────────────────────
-    {20, 30,  34,   54.23f,      0.28f,   -18.34f,   6.26f},    // Stormwind Stockade
-    {15, 26,  36,  -16.4f,    -383.07f,    61.78f,   1.86f},    // Deadmines
-    {16, 30,  33, -229.135f,  2109.18f,    76.8898f, 1.267f},   // Shadowfang Keep
-    {20, 45,  43, -163.49f,    132.9f,    -73.66f,   5.83f},    // Wailing Caverns
-    {20, 50,  47, 1943.0f,   1544.63f,     82.0f,    1.38f},    // Razorfen Kraul
-    {19, 40,  48, -151.89f,    106.96f,   -39.87f,   4.53f},    // Blackfathom Deeps
-    {15, 25, 389,    3.81f,     -14.82f,   -17.84f,   4.39f},    // Ragefire Chasm
-    {24, 45,  90, -332.22f,     -2.28f,   -150.86f,   2.77f},    // Gnomeregan
-    {37, 50, 189, 855.683f,   1321.5f,     18.6709f, 0.001747f}, // Scarlet Monastery (Cathedral 37+)
-    {37, 55, 129, 2592.55f,   1107.5f,     51.29f,   4.74f},    // Razorfen Downs
-    // {28, 55,  70, -226.8f,     49.09f,    -46.03f,   1.39f},    // Uldaman — disabled for testing
-    {29, 60, 209, 1213.52f,   841.59f,      8.93f,   6.09f},    // Zul'Farrak
-    {30, 55, 349,  752.91f,   -616.53f,   -33.11f,   1.37f},    // Maraudon
-    {31, 55, 109, -319.24f,     99.9f,    -131.85f,   3.19f},    // Sunken Temple
-    // {40, 60, 230, 456.929f,    34.0923f,   -68.0896f, 4.71239f}, // Blackrock Depths — disabled for testing
-    // {40, 60, 229,   78.5083f, -225.044f,    49.839f,  5.1f},    // Blackrock Spire — disabled for testing
-    // {45, 60, 329, 3593.15f,  -3646.56f,    138.5f,   5.33f},    // Stratholme — disabled for testing
-    // {40, 60, 289,  196.37f,    127.05f,    134.91f,  6.09f},    // Scholomance — disabled for testing
-    {40, 60, 429,   31.5609f,  159.45f,     -3.4777f, 0.01f},   // Dire Maul
-
+    // ─── Level-bracketed dungeon split ──────────────────────────
+    {15, 25,  33, -228.19f,   2110.6f,    76.9f,   0.0f},    // Shadowfang Keep
+    {15, 25,  43, -163.49f,    132.9f,   -73.5f,   0.0f},    // Wailing Caverns
+    {20, 30,  48, -151.89f,    106.96f,  -39.87f,  4.53f},   // Blackfathom Deeps
+    {25, 35,  47, -445.63f,    -26.6f,   -54.8f,   0.0f},    // Razorfen Kraul
+    {30, 45, 189, 855.683f,   1321.5f,    18.6709f, 0.0f},    // Scarlet Monastery (all wings)
+    {40, 50, 209, 1307.21f,    821.42f,   11.3f,   0.0f},    // Zul'Farrak
 };
 
 namespace BotDungeonQueueConfig
@@ -365,20 +351,18 @@ public:
         CombatMonitor::Init();
 
         // Evict bots from temporarily disabled dungeon maps
-        static uint32 const evictMaps[] = {70, 229, 230, 289, 329};
         RandomPlayerbotMgr& mgr = sRandomPlayerbotMgr;
         for (auto it = mgr.GetPlayerBotsBegin(); it != mgr.GetPlayerBotsEnd(); ++it)
         {
             Player* bot = it->second;
             if (!bot || !bot->IsInWorld()) continue;
-            for (uint32 m : evictMaps)
-            {
-                if (bot->GetMapId() == m && bot->GetGroup())
-                {
-                    TeleportGroupHome(bot->GetGroup());
-                    break;
-                }
-            }
+            // Evict from non-testing dungeons — only keep SFK/WC/BFD/RFK/SM/ZF
+            uint32 const allowedMaps[] = {33, 43, 48, 47, 189, 209};
+            bool isAllowed = false;
+            for (uint32 m : allowedMaps)
+                if (bot->GetMapId() == m) { isAllowed = true; break; }
+            if (!isAllowed && bot->GetGroup())
+                TeleportGroupHome(bot->GetGroup());
         }
 
         LOG_INFO("playerbots", "mod-bot-dungeon-queue: enabled (queue every {}s, cleanup every {}s)",
@@ -950,6 +934,25 @@ public:
                     {
                         LOG_INFO("playerbots", "mod-bot-dungeon-queue: max wipes ({}) reached for inst {} — evicting group",
                                  maxWipes, instId);
+                        LOG_INFO("playerbots", "mod-bot-dungeon-queue: === FAILED RUN: {} (map {}) ===",
+                                 MapEntry::TryCreate(m->GetId()) ? MapEntry::TryCreate(m->GetId())->name[0] : "unknown", m->GetId());
+                        LOG_INFO("playerbots", "mod-bot-dungeon-queue:   failed by {} | wipes={}", bot->GetName(), wipes);
+                        LOG_INFO("playerbots", "mod-bot-dungeon-queue:   group members:");
+                        for (GroupReference* ref = g->GetFirstMember(); ref; ref = ref->next())
+                        {
+                            Player* mbr = ref->GetSource();
+                            if (!mbr) continue;
+                            PlayerbotAI* ai = GET_PLAYERBOT_AI(mbr);
+                            char const* role = "?";
+                            if (ai && PlayerbotAI::IsTank(mbr)) role = "tank";
+                            else if (ai && PlayerbotAI::IsHeal(mbr)) role = "heal";
+                            else if (ai) role = "dps";
+                            static char const* clsNames[12] = {"","war","pal","hun","rog","pri","dk","sha","mag","warl","monk","dru"};
+                            uint8 cls = mbr->getClass();
+                            char const* clsName = (cls > 0 && cls < 12) ? clsNames[cls] : "?";
+                            LOG_INFO("playerbots", "mod-bot-dungeon-queue:     {} ({}) - {} lvl{}", mbr->GetName(),
+                                     role, clsName, mbr->GetLevel());
+                        }
                         g_wipeCount.erase(instId);
                         g_wipeCounted.erase(instId);
                         TeleportGroupHome(g);
