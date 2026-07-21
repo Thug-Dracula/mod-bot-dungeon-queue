@@ -137,15 +137,21 @@ namespace
     std::unordered_map<ObjectGuid, uint32> g_separationSince;
 }
 
-// Teleport a bot to a target position. If the bot doesn't arrive within
-// 5yd of the target (unwalkable spot, engine placed them elsewhere), fall
-// back to the dungeon entrance from BotDungeonPorts so the bot at least
-// gets into the right area instead of being stranded.
+// Teleport a bot to a target position (e.g. near the tank). Tries a small
+// Z offset first so the engine doesn't push us through the floor onto a
+// different level. If still too far, falls back to the dungeon entrance
+// from BotDungeonPorts so the bot doesn't get stranded outside the map.
 static void TeleportToOrFallback(Player* bot, uint32 mapId, float x, float y, float z, float o)
 {
-    bot->TeleportTo(mapId, x, y, z, o);
-    // TeleportTo is synchronous for same-map; check if we arrived at target
-    if (bot->GetMapId() == mapId && bot->GetExactDist2d(Position(x, y, z)) > 5.0f)
+    // Try with Z offset first to avoid floor-clipping onto wrong level
+    bot->TeleportTo(mapId, x, y, z + 2.0f, o);
+    // TeleportTo is synchronous for same-map; check if we arrived near target
+    if (bot->GetMapId() == mapId && bot->GetExactDist2d(Position(x, y, z)) > 15.0f)
+    {
+        // Try once more without the Z offset (maybe offset was worse)
+        bot->TeleportTo(mapId, x, y, z, o);
+    }
+    if (bot->GetMapId() == mapId && bot->GetExactDist2d(Position(x, y, z)) > 25.0f)
     {
         for (auto const& dp : BotDungeonPorts)
         {
@@ -180,13 +186,34 @@ static void ApplyPermanentWaterBreathing(Player* player)
 constexpr uint32 RES_HOLD_TIMEOUT_SECS = 30u;
 
 std::vector<DungeonPort> const BotDungeonPorts = {
-    // ─── Level-bracketed dungeon split ──────────────────────────
-    {15, 25,  33, -228.19f,   2110.6f,    76.9f,   0.0f},    // Shadowfang Keep
-    {15, 25,  43, -163.49f,    132.9f,   -73.5f,   0.0f},    // Wailing Caverns
-    {20, 30,  48, -151.89f,    106.96f,  -39.87f,  4.53f},   // Blackfathom Deeps
-    {25, 35,  47, -445.63f,    -26.6f,   -54.8f,   0.0f},    // Razorfen Kraul
-    {30, 45, 189, 855.683f,   1321.5f,    18.6709f, 0.0f},    // Scarlet Monastery (all wings)
-    {40, 50, 209, 1307.21f,    821.42f,   11.3f,   0.0f},    // Zul'Farrak
+    // ─── 15-24: Starter dungeons ──────────────────────────────────
+    {15, 22,  36,   -16.40f,   -383.07f,   61.78f,   1.86f},  // Deadmines (15-20)
+    {15, 23,  43,  -163.49f,    132.90f,  -73.66f,   5.83f},  // Wailing Caverns (15-21)
+    {18, 24,  34,    54.23f,      0.28f,  -18.34f,   6.26f},  // Stockade (18-24)
+    {18, 26,  33,  -229.14f,   2109.18f,   76.89f,   1.27f},  // Shadowfang Keep (18-25)
+
+    // ─── 20-34: Mid-tier ─────────────────────────────────────────
+    {20, 30,  48,  -151.89f,    106.96f,  -39.87f,   4.53f},  // Blackfathom Deeps (20-27)
+    {22, 30,  47,  1943.00f,   1544.63f,   82.00f,   1.38f},  // Razorfen Kraul (22-30)
+    {25, 35,  90,  -332.22f,     -2.28f, -150.86f,   2.77f},  // Gnomeregan (25-34)
+    {28, 38, 189,  1688.99f,   1053.48f,   18.68f,   0.00f},  // SM Graveyard (28-35)
+
+    // ─── 30-47: Upper-tier ───────────────────────────────────────
+    {30, 40, 129,  2592.55f,   1107.50f,   51.29f,   4.74f},  // Razorfen Downs (30-40)
+    {30, 42,  70,  -226.80f,     49.09f,  -46.03f,   1.39f},  // Uldaman (30-40)
+    {30, 45, 349,  1019.69f,   -458.31f,  -43.43f,   0.31f},  // Maraudon (27-50)
+    {33, 43, 189,   255.35f,   -209.09f,   18.68f,   6.27f},  // SM Library (33-40)
+    {35, 47, 189,  1610.83f,   -323.43f,   18.67f,   6.28f},  // SM Armory (35-45)
+    {35, 48, 209,  1213.52f,    841.59f,    8.93f,   6.09f},  // Zul'Farrak (35-47)
+    {38, 48, 189,   855.68f,   1321.50f,   18.67f,   0.00f},  // SM Cathedral (38-45)
+
+    // ─── 44-60: End-game ─────────────────────────────────────────
+    {44, 50, 109,  -319.24f,     99.90f, -131.85f,   3.19f},  // Sunken Temple (44-50)
+    {48, 56, 230,   456.93f,     34.09f,  -68.09f,   4.71f},  // Blackrock Depths (48-56)
+    {48, 56, 429,    44.45f,   -154.82f,   -2.71f,   0.00f},  // Dire Maul (48-56)
+    {52, 60, 229,    78.51f,   -225.04f,   49.84f,   5.10f},  // Blackrock Spire (52-60)
+    {56, 60, 289,   196.37f,    127.05f,  134.91f,   6.09f},  // Scholomance (56-60)
+    {56, 60, 329,  3593.15f,  -3646.56f,  138.50f,   5.33f},  // Stratholme (56-60)
 };
 
 namespace BotDungeonQueueConfig
@@ -356,13 +383,16 @@ public:
         {
             Player* bot = it->second;
             if (!bot || !bot->IsInWorld()) continue;
-            // Evict from non-testing dungeons — only keep SFK/WC/BFD/RFK/SM/ZF
-            uint32 const allowedMaps[] = {33, 43, 48, 47, 189, 209};
+            // Evict from non-testing dungeons — only keep BFD/Gnome/SM
+            uint32 const allowedMaps[] = {48, 90, 189};
             bool isAllowed = false;
             for (uint32 m : allowedMaps)
                 if (bot->GetMapId() == m) { isAllowed = true; break; }
             if (!isAllowed && bot->GetGroup())
+            {
+                LOG_INFO("playerbots", "mod-bot-dungeon-queue: === DUNGEON INCOMPLETE: map {} (disabled-map-eviction) ===", bot->GetMapId());
                 TeleportGroupHome(bot->GetGroup());
+            }
         }
 
         LOG_INFO("playerbots", "mod-bot-dungeon-queue: enabled (queue every {}s, cleanup every {}s)",
@@ -787,13 +817,18 @@ public:
                 }
             }
 
-            // On full wipe, clear any stale hold (everyone dead, no one to unpause)
+            // On full wipe, clear stale hold and wipe-counter so the group
+            // can try again without being stuck at 1 wipe forever.
             if (fullWipe)
             {
                 InstanceMap* im_map = m->ToInstanceMap();
                 uint32 const hold_inst = im_map ? im_map->GetInstanceId() : 0;
-                if (hold_inst && g_resurrectionHold.count(hold_inst))
-                    g_resurrectionHold.erase(hold_inst);
+                if (hold_inst)
+                {
+                    if (g_resurrectionHold.count(hold_inst))
+                        g_resurrectionHold.erase(hold_inst);
+                    g_wipeCounted.erase(hold_inst);
+                }
             }
 
             LOG_INFO("playerbots", "mod-bot-dungeon-queue: {} dead {} in {} ({}) — releasing spirit",
@@ -816,6 +851,13 @@ public:
                 sRandomPlayerbotMgr.SetValue(bot->GetGUID().GetCounter(), "death_map_id", m->GetId());
                 if (InstanceMap* im = m->ToInstanceMap())
                     sRandomPlayerbotMgr.SetValue(bot->GetGUID().GetCounter(), "death_instance_id", im->GetInstanceId());
+            }
+            // If a groupmate is already casting a res, skip auto-release
+            if (bot->isResurrectRequested())
+            {
+                LOG_INFO("playerbots", "mod-bot-dungeon-queue: {} has pending res — skipping auto spirit release",
+                         bot->GetName());
+                return;
             }
             WorldPacket data(CMSG_REPOP_REQUEST);
             data << uint8(0);
@@ -842,6 +884,7 @@ public:
                 // instead of waiting for the stuck cleanup (30s delay).
                 LOG_INFO("playerbots", "mod-bot-dungeon-queue: orphaned survivor {} ungrouped in map {} — teleporting home",
                          bot->GetName(), m->GetId());
+                LOG_INFO("playerbots", "mod-bot-dungeon-queue: === DUNGEON INCOMPLETE: map {} (orphaned-survivor) ===", m->GetId());
                 bot->TeleportTo(bot->m_homebindMapId, bot->m_homebindX,
                                 bot->m_homebindY, bot->m_homebindZ, 0.0f);
                 continue;
@@ -935,7 +978,7 @@ public:
                         LOG_INFO("playerbots", "mod-bot-dungeon-queue: max wipes ({}) reached for inst {} — evicting group",
                                  maxWipes, instId);
                         LOG_INFO("playerbots", "mod-bot-dungeon-queue: === FAILED RUN: {} (map {}) ===",
-                                 MapEntry::TryCreate(m->GetId()) ? MapEntry::TryCreate(m->GetId())->name[0] : "unknown", m->GetId());
+                                 sMapStore.LookupEntry(m->GetId()) ? sMapStore.LookupEntry(m->GetId())->name[0] : "unknown", m->GetId());
                         LOG_INFO("playerbots", "mod-bot-dungeon-queue:   failed by {} | wipes={}", bot->GetName(), wipes);
                         LOG_INFO("playerbots", "mod-bot-dungeon-queue:   group members:");
                         for (GroupReference* ref = g->GetFirstMember(); ref; ref = ref->next())
@@ -1335,9 +1378,17 @@ private:
                     g_dungeonEntryTimeMs[tank->GetGUID()] = getMSTime();
                     for (Player* m : {healer, groupDps[0], groupDps[1], groupDps[2]})
                     {
-                        m->TeleportTo(selected->mapId, selected->x, selected->y, selected->z, selected->o);
+                        if (!m->TeleportTo(selected->mapId, selected->x, selected->y, selected->z, selected->o))
+                        {
+                            LOG_INFO("playerbots", "mod-bot-dungeon-queue: teleport failed for follower {}, disbanding",
+                                     m->GetName());
+                            Fail();
+                            break;
+                        }
                         g_dungeonEntryTimeMs[m->GetGUID()] = getMSTime();
                     }
+                    if (grp->GetMembersCount() < 5)
+                        continue;
 
                     LOG_INFO("playerbots", "mod-bot-dungeon-queue: teleported group '{}' to map {} (levels {}-{})",
                              tank->GetName(), selected->mapId, minLvl, maxLvl);
@@ -1449,6 +1500,7 @@ private:
 
             LOG_INFO("playerbots", "mod-bot-dungeon-queue: stuck cleanup teleporting {} ({}) home from map {}",
                      bot->GetName(), group ? "solo survivor" : "ungrouped", bot->GetMapId());
+            LOG_INFO("playerbots", "mod-bot-dungeon-queue: === DUNGEON INCOMPLETE: map {} (stuck-cleanup) ===", bot->GetMapId());
             sLFGMgr->LeaveLfg(bot->GetGUID());
             bot->TeleportTo(bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ, 0.0f);
             // Disband group so evicted bots become eligible for re-queuing
@@ -1580,7 +1632,10 @@ public:
                         g_wipeCount.erase(instId);
                         g_wipeCounted.erase(instId);
                         if (Group* g = player->GetGroup())
+                        {
+                            LOG_INFO("playerbots", "mod-bot-dungeon-queue: === DUNGEON INCOMPLETE: map {} (max-wipes-evict) ===", player->GetMapId());
                             TeleportGroupHome(g);
+                        }
                     }
                 }
             }
@@ -1701,6 +1756,7 @@ public:
 
         LOG_INFO("playerbots", "mod-bot-dungeon-queue: max wipes ({}) reached for inst {} — evicting group",
                  maxWipes, instId);
+        LOG_INFO("playerbots", "mod-bot-dungeon-queue: === DUNGEON INCOMPLETE: map {} (max-wipes-evict-ghost) ===", player->GetMapId());
         g_wipeCount.erase(instId);
         g_wipeCounted.erase(instId);
         TeleportGroupHome(group);
